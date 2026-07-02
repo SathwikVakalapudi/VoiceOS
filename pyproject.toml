@@ -1,0 +1,28 @@
+[project]
+name = "voiceos"
+version = "0.1.0"
+description = "Open-source, self-hosted, modular voice AI engine"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "sounddevice>=0.4.6",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "silero-vad>=5.1",
+    "faster-whisper>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["voiceos*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

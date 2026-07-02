@@ -1,0 +1,27 @@
+# Core
+numpy>=1.26
+sounddevice>=0.4.6
+httpx>=0.27
+pydantic>=2.7
+pydantic-settings>=2.2
+
+# VAD (silero-vad pulls in torch; onnxruntime comes with faster-whisper)
+silero-vad>=5.1
+
+# Telephony transcoding uses stdlib audioop, removed in 3.13 (PEP 594)
+audioop-lts>=0.2; python_version >= "3.13"
+
+# STT
+faster-whisper>=1.0
+
+# TTS fallback provider (free MS voices; av decodes its mp3 stream)
+edge-tts>=6.1
+av>=11.0
+
+# Development
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# Phase 2 (API layer) — not used yet
+# fastapi
+# uvicorn

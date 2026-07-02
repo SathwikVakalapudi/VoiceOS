@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+*.wav
+*.mp3
+models/
+.mypy_cache/
+.ruff_cache/
+
+# Local Claude Code settings (may contain machine-specific paths / secrets)
+.claude/settings.local.json
+
+# Debug/scratch API dumps
+sarvam_resp.json
+sarvam_stream.txt
