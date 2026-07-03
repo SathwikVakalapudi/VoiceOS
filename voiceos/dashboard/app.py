@@ -57,12 +57,13 @@ async def _retry(make_coro: Callable, tries: int = 4, delay: float = 0.8):
             return await make_coro()
         except httpx.HTTPStatusError as exc:
             last = exc
-            if exc.response.status_code == 429:
+            code = exc.response.status_code
+            if code == 429 or code >= 500:  # rate limit or transient server error
                 ra = exc.response.headers.get("retry-after", "")
-                wait = float(ra) if ra.replace(".", "", 1).isdigit() else delay * (2 ** i) + 2
-                await asyncio.sleep(min(wait, 20))
+                wait = float(ra) if ra.replace(".", "", 1).isdigit() else delay * (2 ** i) + 1
+                await asyncio.sleep(min(wait, 15))
             else:
-                raise
+                raise  # 4xx (bad request / auth) won't improve on retry
         except Exception as exc:  # noqa: BLE001 - varied network errors
             last = exc
             await asyncio.sleep(delay)
@@ -244,9 +245,12 @@ def create_app(
         try:
             r = await _retry(lambda: llm.complete(msgs))
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429:
-                raise HTTPException(429, "LLM (Groq) is rate-limited — wait ~30 s and try "
-                                    "again, or use a higher Groq tier / different LLM.")
+            code = exc.response.status_code
+            if code == 429:
+                raise HTTPException(429, "LLM is rate-limited — wait a moment and try again.")
+            if code >= 500:
+                raise HTTPException(503, "LLM service is busy right now — please tap and "
+                                    "speak again.")
             raise HTTPException(502, f"LLM error: {exc}")
         return r.get("content", "") if r else ""
 
