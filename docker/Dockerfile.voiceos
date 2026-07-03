@@ -1,0 +1,23 @@
+# VoiceOS telephony server — answers calls bridged from Asterisk over
+# AudioSocket and runs the VAD -> STT -> LLM -> TTS pipeline per call.
+FROM python:3.12-slim
+
+# Runtime libs: libportaudio2 for `sounddevice` (imported eagerly even on the
+# telephony path), libgomp1 for ctranslate2/torch OpenMP, ffmpeg for PyAV
+# (edge-tts mp3 decode). build-essential covers any wheel that builds from sdist.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libportaudio2 libgomp1 ffmpeg ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt websockets
+
+COPY . .
+
+# AudioSocket bridge (Asterisk) on 8090; WebSocket bridge (FreeSWITCH/Twilio) on 8091.
+EXPOSE 8090 8091
+
+CMD ["python", "serve_telephony.py", "--bridge", "audiosocket", \
+     "--host", "0.0.0.0", "--port", "8090"]

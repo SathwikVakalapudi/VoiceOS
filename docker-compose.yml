@@ -1,0 +1,47 @@
+# Local end-to-end telephony stack: softphone -> Asterisk -> AudioSocket -> VoiceOS.
+#
+#   1) cp .env.example .env   # then set your LLM/STT/TTS providers
+#   2) docker compose up --build
+#   3) register a softphone (Linphone/Zoiper) to <host-ip>:5060 as 1001/verysecret
+#   4) dial 600 for an echo test, then 100 to talk to the VoiceOS AI
+#
+# See docs/TELEPHONY.md ("Local end-to-end test") for softphone + NAT details.
+
+services:
+  voiceos:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.voiceos
+    env_file: .env                 # LLM/STT/TTS config + keys (never committed)
+    # Reach an LLM/TTS running on the host (e.g. Ollama) via host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./campaigns:/app/campaigns:ro
+      - hf-cache:/root/.cache      # persist the downloaded Whisper/HF models
+    # Run the demo survey persona on every call; drop --campaign for a generic
+    # assistant, or point it at your own persona JSON.
+    command:
+      - python
+      - serve_telephony.py
+      - --bridge=audiosocket
+      - --host=0.0.0.0
+      - --port=8090
+      - --campaign=campaigns/rajasthan_survey.json
+    expose:
+      - "8090"                     # AudioSocket; reached by Asterisk over the compose network
+    restart: unless-stopped
+
+  asterisk:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.asterisk
+    depends_on:
+      - voiceos
+    ports:
+      - "5060:5060/udp"            # SIP signaling for the softphone
+      - "10000-10100:10000-10100/udp"  # RTP media (must match rtp.conf)
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

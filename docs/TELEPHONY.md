@@ -40,7 +40,55 @@ Python deps (stdlib asyncio TCP). Use it unless you're committed to FreeSWITCH.
 
 ---
 
-## 2. Asterisk (AudioSocket) — the implemented path
+## 1b. Local end-to-end test (Docker + Asterisk + a softphone)
+
+Place a **real call into VoiceOS on your laptop** — no SIP trunk, no DID — with
+the bundled stack (`docker-compose.yml`, `docker/`). A softphone registers to a
+dockerized Asterisk, which bridges the call to VoiceOS over AudioSocket.
+
+```
+[Softphone: Linphone/Zoiper] --SIP/RTP--> [Asterisk (Docker)]
+                                                | AudioSocket (TCP)
+                                          [VoiceOS (Docker)] --> VAD/STT/LLM/TTS
+```
+
+```bash
+cp .env.example .env          # set your LLM / STT / TTS providers + keys
+docker compose up --build     # builds VoiceOS + Asterisk, starts both
+```
+
+Then point a softphone at Asterisk and call in:
+
+1. Install **Linphone** or **Zoiper** (free).
+2. Add a SIP account:
+   - server / domain: `<your-host-LAN-IP>` (e.g. `192.168.1.50`), port `5060`
+   - username `1001`, password `verysecret` (from `docker/asterisk/pjsip.conf` — change it)
+3. **Dial `600`** first — a plain echo test. Two-way audio here proves SIP/RTP
+   work. If `600` is silent, it's a NAT/RTP problem, not VoiceOS (see below).
+4. **Dial `100`** — you're now talking to VoiceOS. With the default
+   `--campaign campaigns/rajasthan_survey.json`, it opens with the survey line.
+
+Watch it work:
+```bash
+docker compose logs -f voiceos     # transcripts, LLM replies, TTS
+docker compose logs -f asterisk    # SIP registration, call events
+docker compose exec asterisk asterisk -rx "module show like audiosocket"  # confirm the module loaded
+```
+
+**Docker Desktop (Windows/Mac) audio note.** SIP/RTP hate NAT. If `600` gives
+one-way or no audio, uncomment `external_media_address` /
+`external_signaling_address` / `local_net` in `docker/asterisk/pjsip.conf`, set
+them to your host LAN IP + subnet, and `docker compose restart asterisk`. On
+Linux this usually works out of the box. The RTP range (`10000-10100/udp`) is
+published in compose and must match `docker/asterisk/rtp.conf`.
+
+> The VoiceOS container still needs a reachable **LLM** (and TTS) — `.env`
+> drives it. For a host-local Ollama, set `VOICEOS_LLM__BASE_URL` to
+> `http://host.docker.internal:11434/v1` (the compose file maps that host).
+
+---
+
+## 2. Asterisk (AudioSocket) — the production path
 
 ### 2a. SIP trunk (`pjsip.conf`) — Telnyx example, IP-authenticated
 ```ini

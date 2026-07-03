@@ -1,0 +1,24 @@
+# Asterisk media server for local end-to-end testing. Terminates SIP/RTP from
+# a softphone and bridges each call's audio to VoiceOS over AudioSocket.
+#
+# Debian's `asterisk` package is Asterisk 20 (LTS); `asterisk-modules` provides
+# res_pjsip (SIP) and the AudioSocket modules (res_audiosocket / app_audiosocket).
+# If AudioSocket is missing on your platform, verify with:
+#     docker compose exec asterisk asterisk -rx "module show like audiosocket"
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        asterisk asterisk-modules \
+    && rm -rf /var/lib/apt/lists/*
+
+# Override only the configs we care about; keep the package's other defaults
+# (asterisk.conf, modules autoload, codecs, etc.).
+COPY docker/asterisk/pjsip.conf     /etc/asterisk/pjsip.conf
+COPY docker/asterisk/extensions.conf /etc/asterisk/extensions.conf
+COPY docker/asterisk/rtp.conf       /etc/asterisk/rtp.conf
+
+# SIP signaling; RTP media range must match rtp.conf and the compose port map.
+EXPOSE 5060/udp 10000-10100/udp
+
+# Foreground, verbose, no color — logs go to `docker compose logs asterisk`.
+CMD ["asterisk", "-f", "-vvv", "-T", "-W"]
