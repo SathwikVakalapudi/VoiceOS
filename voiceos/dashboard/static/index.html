@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VoiceOS · Campaign Dashboard</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2a3240;
+    --text:#e6edf3; --muted:#8b98a9; --accent:#4f9cff; --accent2:#1f6feb;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text)}
+  header{display:flex;align-items:center;gap:12px;padding:14px 20px;
+         border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);
+         box-shadow:0 0 8px var(--ok)}
+  header .sub{color:var(--muted);font-size:12px}
+  nav{display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);
+      background:var(--panel)}
+  nav button{background:none;border:0;color:var(--muted);padding:8px 14px;
+      border-radius:8px;cursor:pointer;font-size:13px}
+  nav button.active{background:var(--panel2);color:var(--text)}
+  main{padding:20px;max-width:1100px;margin:0 auto}
+  .tab{display:none}.tab.active{display:block}
+  .row{display:flex;gap:20px;align-items:flex-start}
+  .col-list{width:260px;flex:none}
+  .col-main{flex:1;min-width:0}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+        padding:16px;margin-bottom:16px}
+  .list-item{padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+  .list-item:hover{background:var(--panel2)}
+  .list-item.active{background:var(--panel2);border-color:var(--accent2)}
+  .list-item .nm{font-weight:600}
+  .list-item .meta{color:var(--muted);font-size:12px}
+  label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px}
+  input,textarea,select{width:100%;background:var(--bg);color:var(--text);
+        border:1px solid var(--border);border-radius:8px;padding:9px 11px;font:inherit}
+  textarea{resize:vertical}
+  textarea.code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+  button.btn{background:var(--accent2);color:#fff;border:0;border-radius:8px;
+        padding:9px 16px;cursor:pointer;font-size:13px;font-weight:500}
+  button.btn:hover{background:var(--accent)}
+  button.ghost{background:var(--panel2);color:var(--text)}
+  button.danger{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+  .actions{display:flex;gap:10px;margin-top:16px;align-items:center}
+  .status{font-size:12px;color:var(--muted)}
+  .status.ok{color:var(--ok)}.status.err{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);
+        white-space:nowrap}
+  th{color:var(--muted);font-weight:500}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+  .pill.dry_run,.pill.originated{background:rgba(63,185,80,.15);color:var(--ok)}
+  .pill.skipped_no_consent{background:rgba(210,153,34,.15);color:var(--warn)}
+  .pill.failed{background:rgba(248,81,73,.15);color:var(--bad)}
+  .chat{background:var(--bg);border:1px solid var(--border);border-radius:8px;
+        height:360px;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .msg{max-width:76%;padding:9px 13px;border-radius:12px;white-space:pre-wrap}
+  .msg.bot{background:var(--panel2);align-self:flex-start;border-bottom-left-radius:3px}
+  .msg.user{background:var(--accent2);align-self:flex-end;border-bottom-right-radius:3px}
+  .muted{color:var(--muted)}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  a.dl{color:var(--accent);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>VoiceOS</h1><span class="sub">Campaign Dashboard</span>
+</header>
+<nav>
+  <button data-tab="campaigns" class="active">Campaigns</button>
+  <button data-tab="test">Test</button>
+  <button data-tab="dryrun">Dry-run</button>
+  <button data-tab="results">Results</button>
+</nav>
+<main>
+
+  <!-- CAMPAIGNS -->
+  <section id="tab-campaigns" class="tab active">
+    <div class="row">
+      <div class="col-list">
+        <div class="card">
+          <div class="actions" style="margin:0 0 10px">
+            <button class="btn" id="newCampaign">+ New</button>
+            <button class="ghost btn" id="reloadCampaigns">Reload</button>
+          </div>
+          <div id="campaignList"></div>
+        </div>
+      </div>
+      <div class="col-main">
+        <div class="card">
+          <div class="grid2">
+            <div><label>Name (id: letters, digits, - _)</label>
+              <input id="c_name" placeholder="my-campaign"/></div>
+            <div><label>First message (spoken on connect)</label>
+              <input id="c_first" placeholder="Hello, may I ask a few questions?"/></div>
+          </div>
+          <label>Error message (spoken on LLM failure)</label>
+          <input id="c_error"/>
+          <label>System prompt (the persona / instructions)</label>
+          <textarea id="c_system" class="code" rows="8"></textarea>
+          <label>Survey block (optional JSON: {"name","questions":[…]})</label>
+          <textarea id="c_survey" class="code" rows="8" placeholder='{"name":"my-survey","questions":[{"id":"q1","prompt":"…","type":"choice","options":["yes","no"]}]}'></textarea>
+          <div class="actions">
+            <button class="btn" id="saveCampaign">Save</button>
+            <button class="danger btn" id="deleteCampaign">Delete</button>
+            <span class="status" id="c_status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TEST -->
+  <section id="tab-test" class="tab">
+    <div class="card">
+      <div class="actions" style="margin:0 0 12px">
+        <select id="t_campaign" style="max-width:280px"></select>
+        <button class="btn" id="t_start">Start test call</button>
+        <span class="status" id="t_status"></span>
+      </div>
+      <div class="chat" id="t_chat"><div class="muted">Pick a campaign and start a test to chat with its persona — no phone needed.</div></div>
+      <div class="actions">
+        <input id="t_input" placeholder="Type the respondent's reply…" disabled/>
+        <button class="btn" id="t_send" disabled>Send</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- DRY-RUN -->
+  <section id="tab-dryrun" class="tab">
+    <div class="card">
+      <div class="actions" style="margin:0 0 12px">
+        <select id="d_campaign" style="max-width:280px"></select>
+        <label style="margin:0"><input type="checkbox" id="d_consent" checked style="width:auto"/> require consent</label>
+        <button class="btn" id="d_run">Preview dial list</button>
+        <span class="status" id="d_status"></span>
+      </div>
+      <label>Contacts JSON</label>
+      <textarea id="d_contacts" class="code" rows="6">[
+  {"number":"+15551234567","name":"Asha","consented":true},
+  {"number":"+15550001111","name":"No consent","consented":false}
+]</textarea>
+      <div class="hint">No calls are placed. Shows who would be dialed vs skipped.</div>
+      <div id="d_out" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- RESULTS -->
+  <section id="tab-results" class="tab">
+    <div class="card">
+      <div class="actions" style="margin:0 0 12px">
+        <select id="r_campaign" style="max-width:280px"></select>
+        <button class="btn" id="r_load">Load results</button>
+        <a class="dl" id="r_csv" href="#" style="display:none">Download CSV ↓</a>
+        <span class="status" id="r_status"></span>
+      </div>
+      <div id="r_out" class="muted">Extracted survey answers appear here after calls complete.</div>
+    </div>
+  </section>
+
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const api = async (m,u,b) => {
+  const r = await fetch(u,{method:m,headers:{'Content-Type':'application/json'},
+                          body:b?JSON.stringify(b):undefined});
+  if(!r.ok){ let d; try{d=await r.json()}catch{} throw new Error(d?.detail||r.statusText); }
+  return r.status===204?null:r.json();
+};
+const esc = s => (s??'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- tabs ----
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('#tab-'+b.dataset.tab).classList.add('active');
+  if(b.dataset.tab!=='campaigns') refreshSelectors();
+});
+
+let current=null;
+async function loadCampaigns(){
+  const items = await api('GET','/api/campaigns');
+  const list = $('#campaignList'); list.innerHTML='';
+  items.forEach(it=>{
+    const d=document.createElement('div');
+    d.className='list-item'+(it.name===current?' active':'');
+    d.innerHTML=`<div class="nm">${esc(it.name)}</div><div class="meta">${
+      it.has_survey?`survey · ${it.question_count} fields`:'no survey'}</div>`;
+    d.onclick=()=>openCampaign(it.name);
+    list.appendChild(d);
+  });
+  return items;
+}
+async function openCampaign(name){
+  current=name;
+  const c=await api('GET','/api/campaigns/'+name);
+  $('#c_name').value=name; $('#c_name').disabled=true;
+  $('#c_first').value=c.first_message||''; $('#c_error').value=c.error_message||'';
+  $('#c_system').value=c.system_prompt||'';
+  $('#c_survey').value=c.survey?JSON.stringify(c.survey,null,2):'';
+  setStatus('#c_status','',''); loadCampaigns();
+}
+$('#newCampaign').onclick=()=>{
+  current=null;
+  ['c_name','c_first','c_error','c_system','c_survey'].forEach(i=>$('#'+i).value='');
+  $('#c_name').disabled=false; setStatus('#c_status','','');
+  loadCampaigns();
+};
+$('#reloadCampaigns').onclick=loadCampaigns;
+$('#saveCampaign').onclick=async()=>{
+  const name=$('#c_name').value.trim();
+  if(!name) return setStatus('#c_status','name is required','err');
+  const body={
+    first_message:$('#c_first').value, error_message:$('#c_error').value,
+    system_prompt:$('#c_system').value,
+  };
+  const sv=$('#c_survey').value.trim();
+  if(sv){ try{ body.survey=JSON.parse(sv); }catch(e){ return setStatus('#c_status','survey JSON: '+e.message,'err'); } }
+  try{ await api('PUT','/api/campaigns/'+name,body);
+       current=name; $('#c_name').disabled=true;
+       setStatus('#c_status','saved ✓','ok'); loadCampaigns();
+  }catch(e){ setStatus('#c_status',e.message,'err'); }
+};
+$('#deleteCampaign').onclick=async()=>{
+  const name=$('#c_name').value.trim(); if(!name)return;
+  if(!confirm('Delete campaign "'+name+'"?'))return;
+  try{ await api('DELETE','/api/campaigns/'+name);
+       $('#newCampaign').click(); setStatus('#c_status','deleted','ok');
+  }catch(e){ setStatus('#c_status',e.message,'err'); }
+};
+function setStatus(sel,msg,cls){ const e=$(sel); e.textContent=msg; e.className='status '+(cls||''); }
+
+// ---- selectors shared by test/dryrun/results ----
+async function refreshSelectors(){
+  const items=await api('GET','/api/campaigns');
+  ['#t_campaign','#d_campaign','#r_campaign'].forEach(sel=>{
+    const cur=$(sel).value;
+    $(sel).innerHTML=items.map(i=>`<option>${esc(i.name)}</option>`).join('');
+    if(cur)$(sel).value=cur;
+  });
+}
+
+// ---- test sandbox ----
+let session=null;
+function addMsg(text,who){ const d=document.createElement('div');
+  d.className='msg '+who; d.textContent=text; $('#t_chat').appendChild(d);
+  $('#t_chat').scrollTop=$('#t_chat').scrollHeight; }
+$('#t_start').onclick=async()=>{
+  const name=$('#t_campaign').value; if(!name)return;
+  setStatus('#t_status','starting…','');
+  try{ const r=await api('POST',`/api/campaigns/${name}/test/start`);
+    session=r.session_id; $('#t_chat').innerHTML='';
+    if(r.first_message) addMsg(r.first_message,'bot');
+    $('#t_input').disabled=false; $('#t_send').disabled=false; $('#t_input').focus();
+    setStatus('#t_status','live · '+name,'ok');
+  }catch(e){ setStatus('#t_status',e.message,'err'); }
+};
+async function sendTest(){
+  const t=$('#t_input').value.trim(); if(!t||!session)return;
+  addMsg(t,'user'); $('#t_input').value=''; $('#t_send').disabled=true;
+  try{ const r=await api('POST','/api/test/message',{session_id:session,message:t});
+    addMsg(r.reply||'(no reply)','bot');
+  }catch(e){ addMsg('[error] '+e.message,'bot'); }
+  $('#t_send').disabled=false; $('#t_input').focus();
+}
+$('#t_send').onclick=sendTest;
+$('#t_input').addEventListener('keydown',e=>{if(e.key==='Enter')sendTest();});
+
+// ---- dry-run ----
+$('#d_run').onclick=async()=>{
+  const name=$('#d_campaign').value; if(!name)return;
+  let contacts; try{ contacts=JSON.parse($('#d_contacts').value); }
+  catch(e){ return setStatus('#d_status','contacts JSON: '+e.message,'err'); }
+  setStatus('#d_status','running…','');
+  try{
+    const r=await api('POST',`/api/campaigns/${name}/dryrun`,
+      {contacts,require_consent:$('#d_consent').checked});
+    const sum=Object.entries(r.summary).map(([k,v])=>`${v} ${k}`).join(' · ');
+    $('#d_out').innerHTML=`<div class="hint">${sum}</div><table><tr><th>Number</th><th>Name</th><th>Outcome</th></tr>`+
+      r.results.map(x=>`<tr><td>${esc(x.number)}</td><td>${esc(x.name)}</td><td><span class="pill ${x.status}">${x.status}</span></td></tr>`).join('')+`</table>`;
+    setStatus('#d_status','done','ok');
+  }catch(e){ setStatus('#d_status',e.message,'err'); }
+};
+
+// ---- results ----
+$('#r_load').onclick=async()=>{
+  const name=$('#r_campaign').value; if(!name)return;
+  setStatus('#r_status','loading…','');
+  try{
+    const r=await api('GET',`/api/campaigns/${name}/results`);
+    $('#r_csv').style.display=r.records.length?'inline':'none';
+    $('#r_csv').href=`/api/campaigns/${name}/results.csv`;
+    if(!r.records.length){ $('#r_out').innerHTML='<span class="muted">No results yet for this campaign.</span>'; setStatus('#r_status','','');return; }
+    const cols=['number','timestamp','status',...r.fields];
+    $('#r_out').innerHTML=`<table><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr>`+
+      r.records.map(rec=>`<tr>`+cols.map(c=>{
+        const v=['number','timestamp','status'].includes(c)?rec[c]:(rec.answers||{})[c];
+        return `<td>${esc(v??'')}</td>`;}).join('')+`</tr>`).join('')+`</table>`;
+    setStatus('#r_status',r.records.length+' calls','ok');
+  }catch(e){ setStatus('#r_status',e.message,'err'); }
+};
+
+loadCampaigns();
+</script>
+</body>
+</html>

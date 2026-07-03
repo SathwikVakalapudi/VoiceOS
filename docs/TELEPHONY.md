@@ -281,6 +281,33 @@ python export_results.py results/survey.jsonl \
 
 ---
 
+## 3f. Campaign dashboard (web UI)
+
+A web dashboard to **build, test, dry-run, and review** campaigns without the
+CLI. It reads/writes the same `campaigns/` files and reads the `results/` that
+`serve_telephony.py` writes, so it composes with everything above.
+
+```bash
+pip install fastapi uvicorn
+python serve_dashboard.py            # http://127.0.0.1:8080
+```
+
+Four tabs:
+- **Campaigns** — create/edit the persona (system prompt, first message, error
+  message) and the `survey` block; validated on save (safe names, unique
+  question ids).
+- **Test** — chat with the campaign's persona as text, using the same LLM the
+  phone calls use. Test the whole script **without placing a call**.
+- **Dry-run** — paste a contact list and preview who would be dialed vs skipped
+  by the consent gate (no calls placed).
+- **Results** — table of extracted survey answers per call, with CSV download.
+
+The API is also usable headless (`GET/PUT/DELETE /api/campaigns/...`,
+`POST /api/campaigns/{name}/test/start`, `.../dryrun`, `.../results`). The test
+sandbox needs a reachable LLM (configured via `.env`, same as calls).
+
+---
+
 ## 4. Scaling to 100+ concurrent calls
 
 The media plane is cheap; **the GPU-bound STT/LLM/TTS is the real bottleneck.**
