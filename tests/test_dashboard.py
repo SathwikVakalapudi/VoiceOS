@@ -160,7 +160,7 @@ def test_index_served(client):
 
 def test_live_page_served(client):
     r = client.get("/live")
-    assert r.status_code == 200 and "Live Conversation Tester" in r.text
+    assert r.status_code == 200 and "Live Call" in r.text
 
 
 def test_live_reply_uses_custom_prompt_and_history(client):

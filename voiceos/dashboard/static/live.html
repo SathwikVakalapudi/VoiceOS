@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>VoiceOS · Live Conversation Tester</title>
+<title>VoiceOS · Live Call</title>
 <style>
   :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2330;--border:#2a3240;--text:#e6edf3;
         --muted:#8b98a9;--accent:#4f9cff;--accent2:#1f6feb;--ok:#3fb950;--warn:#d29922;--bad:#f85149;}
@@ -17,52 +17,40 @@
   select,input,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:inherit}
   textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
   .row{display:flex;gap:14px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
-  button{border:0;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button{border:0;border-radius:8px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer}
   button:disabled{opacity:.5;cursor:default}
-  .start{background:var(--ok);color:#06210e}.stop{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+  .call{background:var(--ok);color:#06210e}.end{background:var(--bad);color:#fff}
   .ghost{background:var(--panel2);color:var(--text)}
-  .mic{background:var(--accent2);color:#fff;font-size:16px;padding:16px 26px;border-radius:40px}
-  .mic.rec{background:var(--bad);animation:pulse 1s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
   .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .status{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;background:var(--panel2);font-weight:600;margin-bottom:14px}
-  .dot{width:12px;height:12px;border-radius:50%;background:var(--muted)}
-  .dot.rec{background:var(--bad);box-shadow:0 0 12px var(--bad);animation:pulse 1s infinite}
-  .dot.think{background:var(--warn);box-shadow:0 0 12px var(--warn)}
-  .dot.play{background:var(--accent);box-shadow:0 0 12px var(--accent);animation:pulse .8s infinite}
-  .chat{min-height:220px;max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
+  .status{display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:10px;background:var(--panel2);font-weight:600;margin-bottom:14px;font-size:15px}
+  .orb{width:16px;height:16px;border-radius:50%;background:var(--muted);flex:none}
+  .orb.listen{background:var(--ok);box-shadow:0 0 14px var(--ok);animation:pulse 1.4s infinite}
+  .orb.rec{background:var(--bad);box-shadow:0 0 16px var(--bad);animation:pulse .7s infinite}
+  .orb.think{background:var(--warn);box-shadow:0 0 14px var(--warn)}
+  .orb.speak{background:var(--accent);box-shadow:0 0 16px var(--accent);animation:pulse .8s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .meter{flex:1;height:6px;background:#0b0e13;border-radius:4px;overflow:hidden;min-width:80px}
+  .meter>div{height:100%;width:0;background:var(--ok);transition:width .05s}
+  .chat{min-height:240px;max-height:46vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
   .msg{max-width:82%;padding:11px 15px;border-radius:14px;white-space:pre-wrap;font-size:15px}
   .msg.bot{background:var(--panel2);align-self:flex-start;border-bottom-left-radius:3px}
   .msg.user{background:var(--accent2);align-self:flex-end;border-bottom-right-radius:3px}
-  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
   .box{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px}
   .box.bad{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#f6b0ac}
-  .box.ok{background:rgba(63,185,80,.12);border:1px solid var(--ok);color:#a6e3b4}
   .hidden{display:none}
-  .txtrow{display:flex;gap:8px;margin-top:12px}.txtrow input{flex:1}
   #diag{background:#05070a;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;
-        font-size:11.5px;color:#9fb2c8;max-height:150px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
+        font-size:11.5px;color:#9fb2c8;max-height:130px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
 </style>
 </head>
 <body>
-<header><span class="dot" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Conversation Tester — real Sarvam + Cartesia voices</span></header>
+<header><span class="orb" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Call — talk naturally, it listens and replies on its own</span></header>
 <main>
-
   <div id="ctxbad" class="box bad hidden"></div>
 
-  <div class="card">
-    <b>Step 1 — Check your speaker</b>
-    <div class="bar" style="margin-top:10px">
-      <button class="ghost" id="testSpk">🔊 Test agent voice</button>
-      <span class="hint">You should hear a Hindi sentence in the agent's real voice (via Cartesia).</span>
-    </div>
-  </div>
-
   <div class="card" id="setup">
-    <b>Step 2 — Configure & start</b>
     <div class="row">
-      <div>
-        <label>Language (agent voice)</label>
+      <div><label>Language</label>
         <select id="lang">
           <option value="hi-IN">Hindi — हिन्दी</option>
           <option value="en-IN">English</option>
@@ -72,32 +60,23 @@
           <option value="gu-IN">Gujarati — ગુજરાતી</option>
         </select>
       </div>
-      <div>
-        <label>Opening line (optional — leave blank to auto-open from prompt)</label>
-        <input id="firstmsg" placeholder="नमस्ते! …"/>
-      </div>
+      <div><label>Opening line (optional)</label><input id="firstmsg" placeholder="leave blank to auto-open"/></div>
     </div>
     <label>Campaign prompt</label>
-    <textarea id="prompt" rows="10" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
+    <textarea id="prompt" rows="9" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
     <div class="bar" style="margin-top:16px">
-      <button class="start" id="startBtn">▶  Start conversation</button>
-      <span class="hint">Speech recognition is done by VoiceOS (Sarvam) — no browser mic service, works on any network.</span>
+      <button class="call" id="startBtn">📞  Start call</button>
+      <span class="hint">Uses your mic + VoiceOS Sarvam/Gemini/Cartesia. Just talk — no buttons during the call.</span>
     </div>
   </div>
 
   <div class="card hidden" id="live">
-    <div class="status"><span class="dot" id="sdot"></span><span id="statusText">Ready</span></div>
+    <div class="status"><span class="orb" id="orb"></span><span id="statusText">Connecting…</span>
+      <div class="meter"><div id="meterFill"></div></div></div>
     <div class="chat" id="chat"></div>
-    <div class="bar" style="margin-top:16px;justify-content:center">
-      <button class="mic" id="micBtn">🎤 Tap to speak</button>
-    </div>
-    <div class="bar" style="margin-top:12px">
-      <button class="ghost" id="replayBtn">🔁 Replay last</button>
-      <button class="stop" id="stopBtn">■ End test</button>
-    </div>
-    <div class="txtrow">
-      <input id="typed" placeholder="…or type a reply, then Enter"/>
-      <button class="ghost" id="sendTyped">Send</button>
+    <div class="bar" style="margin-top:14px">
+      <button class="end" id="endBtn">■ End call</button>
+      <span class="hint" id="liveHint"></span>
     </div>
   </div>
 
@@ -105,142 +84,123 @@
 </main>
 <script>
 const $=s=>document.querySelector(s);
-let history=[], running=false, lang="hi-IN", stream=null, rec=null, chunks=[], recording=false, lastAudio=null, busy=false;
+let lang="hi-IN", running=false, history=[];
+let stream=null, ac=null, analyser=null, tdata=null;
+let recorder=null, recChunks=[], capturing=false, listening=false, phase="idle";
+let noiseFloor=0.015, speechTicks=0, silenceTicks=0;
+// tuning (ticks are ~50ms)
+const TICK=50, START_MARGIN=0.012, MIN_SPEECH=5, END_SILENCE=16; // ~250ms speech, ~800ms end-silence
+
 function log(m){ const d=$("#diag"); d.textContent+=("["+new Date().toLocaleTimeString()+"] "+m+"\n"); d.scrollTop=d.scrollHeight; }
-function setStatus(mode,t){ $("#sdot").className="dot "+(mode||""); $("#hdot").className="dot "+(mode||""); $("#statusText").textContent=t; }
+function setPhase(p,txt){ phase=p; const c=({listen:"listen",rec:"rec",think:"think",speak:"speak"})[p]||"";
+  $("#orb").className="orb "+c; $("#hdot").className="orb "+c; $("#statusText").textContent=txt; }
 function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; }
-function showTimings(t){
-  const parts=[]; if(t.stt!=null)parts.push("STT "+t.stt+"s"); if(t.llm!=null)parts.push("LLM "+t.llm+"s");
-  if(t.tts!=null)parts.push("TTS "+t.tts+"s"); if(t.total!=null)parts.push("total "+t.total+"s");
-  const d=document.createElement("div"); d.className="hint"; d.style.alignSelf="flex-start"; d.style.marginTop="-6px";
-  d.textContent="⏱ "+parts.join(" · "); $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight;
-}
+function showTimings(t){ const p=[]; if(t.stt!=null)p.push("STT "+t.stt+"s"); if(t.llm!=null)p.push("LLM "+t.llm+"s"); if(t.total!=null)p.push("total "+t.total+"s");
+  const d=document.createElement("div"); d.className="hint"; d.style.marginTop="-6px"; d.textContent="⏱ "+p.join(" · "); $("#chat").appendChild(d); }
 
 if(!window.isSecureContext){ $("#ctxbad").classList.remove("hidden");
-  $("#ctxbad").innerHTML="⚠️ <b>Open this on <u>http://localhost:8080/live</u></b> (not an IP address) — the mic only works there. You're on: <code>"+location.origin+"</code>"; }
+  $("#ctxbad").innerHTML="⚠️ Open on <b>http://localhost:8080/live</b> (not an IP) — mic needs that."; }
 if(!navigator.mediaDevices||!window.MediaRecorder){ $("#ctxbad").classList.remove("hidden");
-  $("#ctxbad").innerHTML="⚠️ This browser can't record audio. Use <b>Chrome</b> or <b>Edge</b>."; }
-log("secure context: "+window.isSecureContext+" · MediaRecorder: "+!!window.MediaRecorder);
+  $("#ctxbad").innerHTML="⚠️ Use <b>Chrome</b> or <b>Edge</b> — this browser can't capture audio."; }
 
-function playB64(b64){ if(!b64){ return Promise.resolve(); } lastAudio=b64;
-  return new Promise(res=>{ const a=new Audio("data:audio/wav;base64,"+b64); a.onended=res; a.onerror=res;
-    setStatus("play","🔊 Agent speaking…"); a.play().catch(e=>{ log("audio play blocked: "+e.message); res(); }); }); }
+async function api(path,body){ const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); } return r.json(); }
+const blobToB64=b=>new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(",")[1]); fr.readAsDataURL(b); });
 
-// --- streaming TTS: play Cartesia chunks as they arrive (Web Audio) ---
-let audioCtx=null, nextTime=0, ttsAbort=null, activeSources=[];
-function ensureCtx(){ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); return audioCtx; }
-function stopTTS(){ if(ttsAbort){ try{ttsAbort.abort()}catch(_){}; ttsAbort=null; }
-  activeSources.forEach(s=>{try{s.stop()}catch(_){}}); activeSources=[]; if(audioCtx) nextTime=audioCtx.currentTime; }
+// ---- streaming TTS playback (Web Audio) ----
+let nextTime=0, ttsAbort=null, activeSources=[];
+function stopTTS(){ if(ttsAbort){try{ttsAbort.abort()}catch(_){}; ttsAbort=null;} activeSources.forEach(s=>{try{s.stop()}catch(_){}}); activeSources=[]; if(ac) nextTime=ac.currentTime; }
 async function streamTTS(text){
   if(!text) return;
-  const ctx=ensureCtx(); try{ await ctx.resume(); }catch(_){}
-  ttsAbort=new AbortController();
-  let res;
-  try{ res=await fetch("/api/live/voice/tts-stream",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({text,language:lang}),signal:ttsAbort.signal}); }
-  catch(e){ if(e.name!=="AbortError") log("tts fetch: "+e.message); return; }
-  const rate=parseInt(res.headers.get("X-Sample-Rate")||"24000");
-  const reader=res.body.getReader();
-  nextTime=Math.max(nextTime, ctx.currentTime+0.06);
-  setStatus("play","🔊 Agent speaking…");
-  let leftover=new Uint8Array(0), t0=performance.now(), first=true;
-  try{
-    while(true){
-      const {done,value}=await reader.read(); if(done) break;
-      let buf=new Uint8Array(leftover.length+value.length); buf.set(leftover,0); buf.set(value,leftover.length);
-      const usable=buf.length-(buf.length%2);
-      if(usable<2){ leftover=buf; continue; }
-      const pcm=new Int16Array(buf.buffer.slice(0,usable)); leftover=buf.slice(usable);
-      const f32=new Float32Array(pcm.length); for(let i=0;i<pcm.length;i++) f32[i]=pcm[i]/32768;
-      const ab=ctx.createBuffer(1,f32.length,rate); ab.getChannelData(0).set(f32);
-      const src=ctx.createBufferSource(); src.buffer=ab; src.connect(ctx.destination);
-      src.start(nextTime); nextTime+=ab.duration; activeSources.push(src);
-      if(first){ first=false; log("first audio @ "+Math.round(performance.now()-t0)+"ms"); }
-    }
-  }catch(e){ if(e.name!=="AbortError") log("tts stream: "+e.message); }
-  ttsAbort=null;
-  const remain=(nextTime-ctx.currentTime)*1000; if(remain>0) await new Promise(r=>setTimeout(r,remain));
+  ttsAbort=new AbortController(); let res;
+  try{ res=await fetch("/api/live/voice/tts-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text,language:lang}),signal:ttsAbort.signal}); }
+  catch(e){ return; }
+  const rate=parseInt(res.headers.get("X-Sample-Rate")||"24000"); const reader=res.body.getReader();
+  nextTime=Math.max(nextTime, ac.currentTime+0.06);
+  let leftover=new Uint8Array(0);
+  try{ while(true){ const {done,value}=await reader.read(); if(done)break;
+    let buf=new Uint8Array(leftover.length+value.length); buf.set(leftover,0); buf.set(value,leftover.length);
+    const usable=buf.length-(buf.length%2); if(usable<2){leftover=buf;continue;}
+    const pcm=new Int16Array(buf.buffer.slice(0,usable)); leftover=buf.slice(usable);
+    const f32=new Float32Array(pcm.length); for(let i=0;i<pcm.length;i++) f32[i]=pcm[i]/32768;
+    const ab=ac.createBuffer(1,f32.length,rate); ab.getChannelData(0).set(f32);
+    const s=ac.createBufferSource(); s.buffer=ab; s.connect(ac.destination); s.start(nextTime); nextTime+=ab.duration; activeSources.push(s);
+  } }catch(e){}
+  ttsAbort=null; const remain=(nextTime-ac.currentTime)*1000; if(remain>0) await new Promise(r=>setTimeout(r,remain));
 }
 
-async function api(path,body){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); }
-  return r.json();
-}
-const blobToB64=blob=>new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(",")[1]); fr.readAsDataURL(blob); });
-
-$("#testSpk").onclick=async()=>{ try{ log("synthesizing test voice…");
-  const j=await api("/api/live/voice/text",{message:"say only: नमस्ते, यह आवाज़ की जाँच है।",
-    system_prompt:"Repeat the user's text verbatim, nothing else.",language:$("#lang").value});
-  await playB64(j.audio_b64); log("test voice played"); }catch(e){ log("test voice error: "+e.message); alert(e.message);} };
-
-async function ensureMic(){
-  if(stream) return true;
-  try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); log("mic permission granted"); return true; }
-  catch(e){ log("mic denied: "+e.name); $("#ctxbad").classList.remove("hidden"); $("#ctxbad").className="box bad";
-    $("#ctxbad").textContent="Microphone blocked — click the mic icon in the address bar, allow it, reload."; return false; }
-}
-
-async function start(){
-  if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
-  if(!(await ensureMic())) return;
-  lang=$("#lang").value; history=[]; running=true;
-  $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
-  setStatus("think","Preparing opening…"); busy=true; $("#micBtn").disabled=true;
-  try{
-    const j=await api("/api/live/voice/open",{system_prompt:$("#prompt").value,
-      first_message:$("#firstmsg").value.trim()||null,language:lang,stream:true});
-    history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); await streamTTS(j.reply);
-  }catch(e){ addMsg("[error] "+e.message,"bot"); log("open error: "+e.message); }
-  busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
-}
-
-async function toggleMic(){
-  if(busy) return;
-  if(!recording){
-    if(!(await ensureMic())) return;
-    stopTTS();  // barge-in: cut the agent's audio when you start speaking
-    chunks=[]; rec=new MediaRecorder(stream); rec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
-    rec.onstop=sendTurn; rec.start(); recording=true;
-    $("#micBtn").textContent="⏹ Tap to send"; $("#micBtn").classList.add("rec"); setStatus("rec","🔴 Recording — speak now…");
+// ---- VAD loop (energy + silence endpointing) ----
+function rms(){ analyser.getByteTimeDomainData(tdata); let s=0; for(let i=0;i<tdata.length;i++){ const v=(tdata[i]-128)/128; s+=v*v; } return Math.sqrt(s/tdata.length); }
+function vadTick(){
+  if(!running) return;
+  const level=rms();
+  $("#meterFill").style.width=Math.min(100, level*400)+"%";
+  if(phase!=="listen" && phase!=="rec"){ return; }        // ignore while thinking/speaking
+  const speaking = level > (noiseFloor + START_MARGIN);
+  if(speaking){
+    silenceTicks=0; speechTicks++;
+    if(!capturing){ startCapture(); }
   } else {
-    recording=false; $("#micBtn").textContent="🎤 Tap to speak"; $("#micBtn").classList.remove("rec");
-    try{ rec.stop(); }catch(_){}
+    if(capturing){ silenceTicks++; if(silenceTicks>=END_SILENCE && speechTicks>=MIN_SPEECH){ endCapture(); }
+      else if(silenceTicks>=END_SILENCE){ // too short -> discard, keep listening
+        try{recorder.stop()}catch(_){}; capturing=false; recChunks=[]; speechTicks=0; setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); }
+    } else { noiseFloor = 0.9*noiseFloor + 0.1*level; }     // adapt to ambient
   }
 }
-async function sendTurn(){
-  busy=true; $("#micBtn").disabled=true; setStatus("think","Transcribing & thinking…");
+function startCapture(){
+  capturing=true; speechTicks=1; silenceTicks=0; recChunks=[];
+  recorder=new MediaRecorder(stream); recorder.ondataavailable=e=>{ if(e.data.size) recChunks.push(e.data); };
+  recorder.onstop=onUtterance; recorder.start();
+  setPhase("rec","🎙️ सुन रहे हैं… (बोलते रहिए)");
+}
+function endCapture(){ capturing=false; try{recorder.stop()}catch(_){}; }  // -> onUtterance
+
+async function onUtterance(){
+  const blob=new Blob(recChunks,{type:"audio/webm"}); recChunks=[]; speechTicks=0; silenceTicks=0;
+  if(blob.size<1200){ setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); return; } // noise
+  setPhase("think","सोच रहे हैं… / Thinking…");
   try{
-    const b64=await blobToB64(new Blob(chunks,{type:"audio/webm"}));
+    const b64=await blobToB64(blob);
     const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang,stream:true});
-    if(j.error){ if(j.transcript) addMsg(j.transcript,"user"); addMsg("⚠️ "+j.error,"bot"); log("turn error: "+j.error);
-      busy=false; $("#micBtn").disabled=false; setStatus("","Tap to speak again"); return; }
-    if(!j.transcript){ log("no speech detected"); setStatus("","Didn't catch that — tap and try again"); busy=false; $("#micBtn").disabled=false; return; }
+    if(j.error){ log("turn: "+j.error); setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); return; }
+    if(!j.transcript){ setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); return; } // silently keep listening
     addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
     addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply});
     if(j.timings) showTimings(j.timings);
+    setPhase("speak","🔊 बोल रहे हैं… / Speaking…");
     await streamTTS(j.reply);
-  }catch(e){ addMsg("[error] "+e.message,"bot"); log("turn error: "+e.message); }
-  busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
+  }catch(e){ log("turn error: "+e.message); }
+  if(running) setPhase("listen","सुन रहे हैं — बोलिए / Listening…");
 }
-async function sendText(){
-  const t=$("#typed").value.trim(); if(!t||busy) return; $("#typed").value="";
-  addMsg(t,"user"); history.push({role:"user",content:t});
-  busy=true; setStatus("think","Thinking…");
-  try{ const j=await api("/api/live/voice/text",{message:t,system_prompt:$("#prompt").value,history,language:lang});
-    addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply}); await playB64(j.audio_b64);
-  }catch(e){ addMsg("[error] "+e.message,"bot"); }
-  busy=false; setStatus("","Your turn — tap to speak");
-}
-function stop(){ running=false; stopTTS(); try{rec&&recording&&rec.stop()}catch(_){}; recording=false;
-  setStatus("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
 
-$("#startBtn").onclick=start;
-$("#micBtn").onclick=toggleMic;
-$("#stopBtn").onclick=stop;
-$("#replayBtn").onclick=()=>playB64(lastAudio);
-$("#sendTyped").onclick=sendText;
-$("#typed").addEventListener("keydown",e=>{ if(e.key==="Enter") sendText(); });
+async function startCall(){
+  if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
+  lang=$("#lang").value; history=[]; running=true;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
+  catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it in the address bar and reload."; running=false; return; }
+  ac=new (window.AudioContext||window.webkitAudioContext)(); await ac.resume();
+  const src=ac.createMediaStreamSource(stream); analyser=ac.createAnalyser(); analyser.fftSize=1024; tdata=new Uint8Array(analyser.fftSize); src.connect(analyser);
+  $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
+  $("#liveHint").textContent=lang+" · Sarvam + Gemini + Cartesia";
+  setInterval(vadTick, TICK);
+  // calibrate ambient noise for ~0.7s
+  setPhase("think","Calibrating mic…"); log("calibrating…");
+  let cal=[]; const t=setInterval(()=>cal.push(rms()),50);
+  setTimeout(async ()=>{ clearInterval(t); noiseFloor=Math.max(0.008, cal.reduce((a,b)=>a+b,0)/cal.length); log("noise floor: "+noiseFloor.toFixed(3));
+    // opening
+    try{ const j=await api("/api/live/voice/open",{system_prompt:$("#prompt").value,first_message:$("#firstmsg").value.trim()||null,language:lang,stream:true});
+      history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); setPhase("speak","🔊 बोल रहे हैं…"); await streamTTS(j.reply);
+    }catch(e){ log("open error: "+e.message); }
+    if(running) setPhase("listen","सुन रहे हैं — बोलिए / Listening…");
+  }, 700);
+}
+function endCall(){ running=false; stopTTS(); try{recorder&&capturing&&recorder.stop()}catch(_){}; capturing=false;
+  try{ stream&&stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+  try{ ac&&ac.close(); }catch(_){}; ac=null;
+  setPhase("idle","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
+
+$("#startBtn").onclick=startCall;
+$("#endBtn").onclick=endCall;
 </script>
 </body>
 </html>

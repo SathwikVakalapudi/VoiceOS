@@ -46,9 +46,10 @@ _TTS_LANG = {
 }
 
 
-async def _retry(make_coro: Callable, tries: int = 4, delay: float = 0.8):
-    """Retry a coroutine factory. Backs off on 429 (respecting Retry-After);
-    short retry on other transient (network) errors."""
+async def _retry(make_coro: Callable, tries: int = 3, delay: float = 0.6):
+    """Retry a coroutine factory. Backs off on 429/5xx but stays snappy for a
+    live call — fail in a few seconds and let the caller re-capture rather than
+    freezing the turn."""
     import httpx
 
     last: Exception | None = None
@@ -60,8 +61,8 @@ async def _retry(make_coro: Callable, tries: int = 4, delay: float = 0.8):
             code = exc.response.status_code
             if code == 429 or code >= 500:  # rate limit or transient server error
                 ra = exc.response.headers.get("retry-after", "")
-                wait = float(ra) if ra.replace(".", "", 1).isdigit() else delay * (2 ** i) + 1
-                await asyncio.sleep(min(wait, 15))
+                wait = float(ra) if ra.replace(".", "", 1).isdigit() else delay * (2 ** i) + 0.5
+                await asyncio.sleep(min(wait, 4))
             else:
                 raise  # 4xx (bad request / auth) won't improve on retry
         except Exception as exc:  # noqa: BLE001 - varied network errors
