@@ -17,12 +17,62 @@ temp dirs. Routes:
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import io
+import wave
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
+
+# UI BCP-47 code -> Cartesia language code (Sarvam STT autodetects, no map needed).
+_TTS_LANG = {
+    "hi-IN": "hi", "hi": "hi", "te-IN": "te", "te": "te", "en-IN": "en",
+    "en-US": "en", "en": "en", "mr-IN": "hi", "ta-IN": "ta", "kn-IN": "kn",
+    "bn-IN": "bn", "gu-IN": "gu",
+}
+
+
+async def _retry(make_coro: Callable, tries: int = 3, delay: float = 0.8):
+    """Retry a coroutine factory on transient errors (flaky network to providers)."""
+    last: Exception | None = None
+    for _ in range(tries):
+        try:
+            return await make_coro()
+        except Exception as exc:  # noqa: BLE001 - providers raise varied network errors
+            last = exc
+            await asyncio.sleep(delay)
+    raise last  # type: ignore[misc]
+
+
+def _decode_audio(data: bytes, rate: int = 16000) -> np.ndarray:
+    """Decode a browser audio blob (webm/opus/etc.) to mono int16 PCM at `rate`."""
+    import av  # optional dep, present in requirements
+
+    container = av.open(io.BytesIO(data))
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
+    out: list[np.ndarray] = []
+    for frame in container.decode(audio=0):
+        for rf in resampler.resample(frame):
+            out.append(rf.to_ndarray().reshape(-1))
+    for rf in resampler.resample(None):  # flush
+        out.append(rf.to_ndarray().reshape(-1))
+    container.close()
+    return np.concatenate(out).astype(np.int16) if out else np.zeros(0, dtype=np.int16)
+
+
+def _wav_b64(pcm: np.ndarray, rate: int) -> str:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(np.ascontiguousarray(pcm, dtype="<i2").tobytes())
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 from voiceos.dashboard.sandbox import TestSandbox
 from voiceos.dashboard.store import CampaignError, CampaignStore
@@ -54,6 +104,26 @@ class LiveTurn(BaseModel):
     history: list[dict] = []           # [{role: user|assistant, content: str}]
     message: str
     first_message: str | None = None
+
+
+class VoiceOpen(BaseModel):
+    system_prompt: str
+    first_message: str | None = None
+    language: str = "hi-IN"
+
+
+class VoiceTurn(BaseModel):
+    audio_b64: str                     # browser mic recording (webm/opus)
+    system_prompt: str
+    history: list[dict] = []
+    language: str = "hi-IN"
+
+
+class VoiceText(BaseModel):
+    message: str
+    system_prompt: str
+    history: list[dict] = []
+    language: str = "hi-IN"
 
 
 def create_app(
@@ -96,6 +166,39 @@ def create_app(
             _llm_holder["llm"] = inst
         return _llm_holder["llm"]
 
+    async def _shared_stt():
+        if settings is None:
+            raise HTTPException(503, "voice STT not configured (no settings)")
+        if "stt" not in _llm_holder:
+            from voiceos.pipeline.pipeline import create_stt
+
+            inst = create_stt(settings)
+            await inst.load()
+            _llm_holder["stt"] = inst
+        return _llm_holder["stt"]
+
+    async def _shared_tts(language: str):
+        if settings is None:
+            raise HTTPException(503, "voice TTS not configured (no settings)")
+        code = _TTS_LANG.get(language, "en")
+        key = f"tts:{code}"
+        if key not in _llm_holder:
+            from voiceos.pipeline.pipeline import create_tts
+
+            s2 = settings.model_copy(deep=True)
+            s2.tts.cartesia_language = code
+            inst = create_tts(s2)
+            await inst.load()
+            _llm_holder[key] = inst
+        return _llm_holder[key]
+
+    async def _synthesize(text: str, language: str) -> str:
+        tts = await _shared_tts(language)
+        clean = (text or "").replace("end_call_tool", "").strip()
+        chunks = [c async for c in tts.synthesize(clean)] if clean else []
+        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
+        return _wav_b64(audio, tts.sample_rate)
+
     # ---- UI ----
     @app.get("/", response_class=HTMLResponse)
     async def index() -> FileResponse:
@@ -115,8 +218,62 @@ def create_app(
             if m.get("role") in ("user", "assistant") and m.get("content"):
                 messages.append({"role": m["role"], "content": m["content"]})
         messages.append({"role": "user", "content": body.message})
-        reply = await (await _shared_llm()).complete(messages)
+        llm = await _shared_llm()
+        reply = await _retry(lambda: llm.complete(messages))
         return {"reply": reply.get("content", "") if reply else ""}
+
+    # ---- Server-side voice (Sarvam STT + Cartesia TTS) — no browser speech ----
+    @app.post("/api/live/voice/open")
+    async def voice_open(body: VoiceOpen) -> dict:
+        if body.first_message:
+            reply = body.first_message
+        else:
+            msgs = [
+                {"role": "system", "content": body.system_prompt},
+                {"role": "user", "content": "[The call has just connected. Speak your "
+                 "opening greeting and consent line now.]"},
+            ]
+            llm = await _shared_llm()
+            r = await _retry(lambda: llm.complete(msgs))
+            reply = r.get("content", "") if r else ""
+        return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
+
+    @app.post("/api/live/voice/turn")
+    async def voice_turn(body: VoiceTurn) -> dict:
+        try:
+            pcm = _decode_audio(base64.b64decode(body.audio_b64))
+        except Exception as exc:
+            raise HTTPException(400, f"could not decode audio: {exc}")
+        stt = await _shared_stt()
+        result = await _retry(lambda: stt.transcribe(pcm, 16000))
+        transcript = (result.text or "").strip()
+        if not transcript:
+            return {"transcript": "", "reply": "", "audio_b64": ""}
+        msgs = [{"role": "system", "content": body.system_prompt}]
+        for m in body.history:
+            if m.get("role") in ("user", "assistant") and m.get("content"):
+                msgs.append({"role": m["role"], "content": m["content"]})
+        msgs.append({"role": "user", "content": transcript})
+        llm = await _shared_llm()
+        r = await _retry(lambda: llm.complete(msgs))
+        reply = r.get("content", "") if r else ""
+        return {
+            "transcript": transcript,
+            "reply": reply,
+            "audio_b64": await _synthesize(reply, body.language),
+        }
+
+    @app.post("/api/live/voice/text")
+    async def voice_text(body: VoiceText) -> dict:
+        msgs = [{"role": "system", "content": body.system_prompt}]
+        for m in body.history:
+            if m.get("role") in ("user", "assistant") and m.get("content"):
+                msgs.append({"role": m["role"], "content": m["content"]})
+        msgs.append({"role": "user", "content": body.message})
+        llm = await _shared_llm()
+        r = await _retry(lambda: llm.complete(msgs))
+        reply = r.get("content", "") if r else ""
+        return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
 
     # ---- Campaign CRUD ----
     @app.get("/api/campaigns")

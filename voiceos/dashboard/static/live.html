@@ -11,90 +11,88 @@
   body{margin:0;font:14px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
   header{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
   header h1{font-size:16px;margin:0;font-weight:600}.sub{color:var(--muted);font-size:12px}
-  main{max-width:900px;margin:0 auto;padding:20px}
+  main{max-width:820px;margin:0 auto;padding:20px}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
   label{display:block;color:var(--muted);font-size:12px;margin:12px 0 5px}
   select,input,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:inherit}
   textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
   .row{display:flex;gap:14px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
   button{border:0;border-radius:8px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
   .start{background:var(--ok);color:#06210e}.stop{background:transparent;color:var(--bad);border:1px solid var(--bad)}
   .ghost{background:var(--panel2);color:var(--text)}
+  .mic{background:var(--accent2);color:#fff;font-size:16px;padding:16px 26px;border-radius:40px}
+  .mic.rec{background:var(--bad);animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
   .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .status{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;background:var(--panel2);font-weight:600;margin-bottom:14px}
   .dot{width:12px;height:12px;border-radius:50%;background:var(--muted)}
-  .dot.listening{background:var(--ok);box-shadow:0 0 12px var(--ok);animation:pulse 1.2s infinite}
-  .dot.speaking{background:var(--accent);box-shadow:0 0 12px var(--accent);animation:pulse .8s infinite}
-  .dot.thinking{background:var(--warn);box-shadow:0 0 12px var(--warn)}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-  .chat{min-height:220px;max-height:42vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
-  .msg{max-width:80%;padding:11px 15px;border-radius:14px;white-space:pre-wrap;font-size:15px}
+  .dot.rec{background:var(--bad);box-shadow:0 0 12px var(--bad);animation:pulse 1s infinite}
+  .dot.think{background:var(--warn);box-shadow:0 0 12px var(--warn)}
+  .dot.play{background:var(--accent);box-shadow:0 0 12px var(--accent);animation:pulse .8s infinite}
+  .chat{min-height:220px;max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
+  .msg{max-width:82%;padding:11px 15px;border-radius:14px;white-space:pre-wrap;font-size:15px}
   .msg.bot{background:var(--panel2);align-self:flex-start;border-bottom-left-radius:3px}
   .msg.user{background:var(--accent2);align-self:flex-end;border-bottom-right-radius:3px}
-  .msg.interim{opacity:.55;font-style:italic}
   .hint{color:var(--muted);font-size:12px;margin-top:8px}
   .box{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px}
   .box.bad{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#f6b0ac}
-  .box.warn{background:rgba(210,153,34,.12);border:1px solid var(--warn);color:#f0d69a}
   .box.ok{background:rgba(63,185,80,.12);border:1px solid var(--ok);color:#a6e3b4}
   .hidden{display:none}
   .txtrow{display:flex;gap:8px;margin-top:12px}.txtrow input{flex:1}
   #diag{background:#05070a;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;
-        font-size:11.5px;color:#9fb2c8;max-height:180px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
+        font-size:11.5px;color:#9fb2c8;max-height:150px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
 </style>
 </head>
 <body>
-<header><span class="dot" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Conversation Tester</span></header>
+<header><span class="dot" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Conversation Tester — real Sarvam + Cartesia voices</span></header>
 <main>
 
   <div id="ctxbad" class="box bad hidden"></div>
 
-  <!-- Pre-flight self-test -->
   <div class="card">
-    <b>Step 1 — Check your browser can do voice</b>
+    <b>Step 1 — Check your speaker</b>
     <div class="bar" style="margin-top:10px">
-      <button class="ghost" id="testSpk">🔊 Test speaker</button>
-      <button class="ghost" id="testMic">🎤 Test mic</button>
-      <span class="hint" id="preHint">Click both. You should HEAR a sentence, and SEE your speech transcribed.</span>
+      <button class="ghost" id="testSpk">🔊 Test agent voice</button>
+      <span class="hint">You should hear a Hindi sentence in the agent's real voice (via Cartesia).</span>
     </div>
-    <div id="micResult" class="box ok hidden"></div>
   </div>
 
-  <!-- SETUP -->
   <div class="card" id="setup">
-    <b>Step 2 — Configure the agent</b>
+    <b>Step 2 — Configure & start</b>
     <div class="row">
       <div>
-        <label>Language (voice + recognition)</label>
+        <label>Language (agent voice)</label>
         <select id="lang">
           <option value="hi-IN">Hindi — हिन्दी</option>
+          <option value="en-IN">English</option>
           <option value="te-IN">Telugu — తెలుగు</option>
-          <option value="en-IN">English (India)</option>
-          <option value="en-US">English (US)</option>
-          <option value="mr-IN">Marathi — मराठी</option>
           <option value="ta-IN">Tamil — தமிழ்</option>
-          <option value="kn-IN">Kannada — ಕನ್ನಡ</option>
           <option value="bn-IN">Bengali — বাংলা</option>
+          <option value="gu-IN">Gujarati — ગુજરાતી</option>
         </select>
       </div>
       <div>
-        <label>Opening line (optional — spoken first)</label>
-        <input id="firstmsg" placeholder="leave blank to auto-open from the prompt"/>
+        <label>Opening line (optional — leave blank to auto-open from prompt)</label>
+        <input id="firstmsg" placeholder="नमस्ते! …"/>
       </div>
     </div>
     <label>Campaign prompt</label>
     <textarea id="prompt" rows="10" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
     <div class="bar" style="margin-top:16px">
       <button class="start" id="startBtn">▶  Start conversation</button>
+      <span class="hint">Speech recognition is done by VoiceOS (Sarvam) — no browser mic service, works on any network.</span>
     </div>
   </div>
 
-  <!-- LIVE -->
   <div class="card hidden" id="live">
     <div class="status"><span class="dot" id="sdot"></span><span id="statusText">Ready</span></div>
     <div class="chat" id="chat"></div>
-    <div class="bar" style="margin-top:14px">
-      <button class="ghost" id="interruptBtn">✋ Interrupt</button>
+    <div class="bar" style="margin-top:16px;justify-content:center">
+      <button class="mic" id="micBtn">🎤 Tap to speak</button>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <button class="ghost" id="replayBtn">🔁 Replay last</button>
       <button class="stop" id="stopBtn">■ End test</button>
     </div>
     <div class="txtrow">
@@ -107,138 +105,96 @@
 </main>
 <script>
 const $=s=>document.querySelector(s);
-const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let recog=null, history=[], running=false, lang="hi-IN", voices=[];
-
+let history=[], running=false, lang="hi-IN", stream=null, rec=null, chunks=[], recording=false, lastAudio=null, busy=false;
 function log(m){ const d=$("#diag"); d.textContent+=("["+new Date().toLocaleTimeString()+"] "+m+"\n"); d.scrollTop=d.scrollHeight; }
+function setStatus(mode,t){ $("#sdot").className="dot "+(mode||""); $("#hdot").className="dot "+(mode||""); $("#statusText").textContent=t; }
+function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; }
 
-// ---- pre-flight environment checks ----
-(function(){
-  log("secure context (needed for mic): "+window.isSecureContext);
-  log("SpeechRecognition available: "+!!SR);
-  if(!window.isSecureContext){
-    $("#ctxbad").classList.remove("hidden");
-    $("#ctxbad").innerHTML="⚠️ <b>Not a secure context.</b> The mic only works on <b>http://localhost:8080/live</b> "
-      +"or <b>http://127.0.0.1:8080/live</b> — NOT via an IP address. You're on: <code>"+location.origin+"</code>";
-  }
-  if(!SR){
-    $("#ctxbad").classList.remove("hidden");
-    $("#ctxbad").innerHTML="⚠️ <b>This browser has no speech recognition.</b> Use <b>Google Chrome</b> or <b>Microsoft Edge</b>. "
-      +"You can still test by typing.";
-  }
-})();
+if(!window.isSecureContext){ $("#ctxbad").classList.remove("hidden");
+  $("#ctxbad").innerHTML="⚠️ <b>Open this on <u>http://localhost:8080/live</u></b> (not an IP address) — the mic only works there. You're on: <code>"+location.origin+"</code>"; }
+if(!navigator.mediaDevices||!window.MediaRecorder){ $("#ctxbad").classList.remove("hidden");
+  $("#ctxbad").innerHTML="⚠️ This browser can't record audio. Use <b>Chrome</b> or <b>Edge</b>."; }
+log("secure context: "+window.isSecureContext+" · MediaRecorder: "+!!window.MediaRecorder);
 
-function loadVoices(){ voices=speechSynthesis.getVoices();
-  log("TTS voices loaded: "+voices.length+(voices.length?(" (langs: "+[...new Set(voices.map(v=>v.lang))].slice(0,12).join(", ")+")"):"")); }
-loadVoices(); speechSynthesis.onvoiceschanged=loadVoices;
+function playB64(b64){ if(!b64){ return Promise.resolve(); } lastAudio=b64;
+  return new Promise(res=>{ const a=new Audio("data:audio/wav;base64,"+b64); a.onended=res; a.onerror=res;
+    setStatus("play","🔊 Agent speaking…"); a.play().catch(e=>{ log("audio play blocked: "+e.message); res(); }); }); }
 
-function pickVoice(l){
-  return voices.find(v=>v.lang===l)||voices.find(v=>v.lang&&v.lang.startsWith(l.split("-")[0]))||voices[0]||null;
-}
-
-// ---- robust speak (won't stall the turn loop) ----
-function speak(text){
-  return new Promise(res=>{
-    text=(text||"").replace(/end_call_tool|\bfunction\b/gi,"").trim();
-    if(!text){ res(); return; }
-    if(!("speechSynthesis" in window)){ log("no speechSynthesis; skipping audio"); res(); return; }
-    speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance(text);
-    u.lang=lang; const v=pickVoice(lang);
-    if(v){ u.voice=v; if(!v.lang.startsWith(lang.split("-")[0])) log("⚠️ no "+lang+" voice installed — using "+v.name+" ("+v.lang+"). Install the language voice in Windows Settings ▸ Time & Language ▸ Speech."); }
-    else log("⚠️ no TTS voices at all");
-    setStatus("speaking","🔊 Agent speaking…");
-    let done=false; const fin=()=>{ if(done)return; done=true; res(); };
-    u.onend=fin; u.onerror=e=>{ log("TTS error: "+(e.error||"?")); fin(); };
-    // safety: never hang the loop if the engine goes silent
-    const secs=Math.max(6, Math.ceil(text.length/8));
-    setTimeout(fin, secs*1000);
-    speechSynthesis.speak(u);
-  });
-}
-
-function setStatus(mode,text){ $("#sdot").className="dot "+(mode||""); $("#hdot").className="dot "+(mode||""); $("#statusText").textContent=text; }
-function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; return d; }
-let interimEl=null;
-function showInterim(t){ if(!interimEl) interimEl=addMsg(t,"user interim"); else interimEl.textContent=t; $("#chat").scrollTop=$("#chat").scrollHeight; }
-function clearInterim(){ if(interimEl){ interimEl.remove(); interimEl=null; } }
-
-function recogError(e){
-  const map={"not-allowed":"Microphone permission BLOCKED. Click the 🔒/camera icon in the address bar ▸ allow Microphone, then reload.",
-    "service-not-allowed":"Speech service blocked — must be on http://localhost (not an IP), on Chrome/Edge, with internet.",
-    "network":"No internet — browser speech recognition needs an internet connection.",
-    "audio-capture":"No microphone found. Check your mic is plugged in and enabled in Windows.",
-    "no-speech":"(didn't catch any speech — will keep listening)","aborted":"(listening restarted)"};
-  log("recognition error: "+e.error+" — "+(map[e.error]||""));
-  if(["not-allowed","service-not-allowed","network","audio-capture"].includes(e.error)){
-    $("#micResult").className="box bad"; $("#micResult").textContent="Mic problem: "+(map[e.error]);
-  }
-}
-
-async function requestMic(){
-  try{ const s=await navigator.mediaDevices.getUserMedia({audio:true}); s.getTracks().forEach(t=>t.stop()); log("mic permission: GRANTED"); return true; }
-  catch(e){ log("mic permission: DENIED ("+e.name+")"); $("#micResult").className="box bad"; $("#micResult").textContent="Microphone permission denied. Allow it in the address-bar icon and reload."; return false; }
-}
-
-// ---- pre-flight buttons ----
-$("#testSpk").onclick=()=>{ lang=$("#lang").value; log("test speaker in "+lang); speak("Hello, this is a voice test. नमस्ते, यह आवाज़ की जाँच है।"); };
-$("#testMic").onclick=async()=>{
-  if(!SR){ log("no SR"); return; }
-  lang=$("#lang").value; if(!(await requestMic())) return;
-  const r=new SR(); r.lang=lang; r.interimResults=false; r.continuous=false;
-  $("#micResult").className="box warn"; $("#micResult").classList.remove("hidden"); $("#micResult").textContent="🎤 Listening… say something now.";
-  r.onresult=e=>{ const t=e.results[0][0].transcript; $("#micResult").className="box ok"; $("#micResult").textContent="✅ Heard you: “"+t+"”"; log("mic test heard: "+t); };
-  r.onerror=recogError; r.start();
-};
-
-// ---- LLM ----
-async function llm(message){
-  setStatus("thinking","Thinking…");
-  const r=await fetch("/api/live/reply",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({system_prompt:$("#prompt").value,history,message})});
+async function api(path,body){
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); }
-  return (await r.json()).reply||"";
+  return r.json();
+}
+const blobToB64=blob=>new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(",")[1]); fr.readAsDataURL(blob); });
+
+$("#testSpk").onclick=async()=>{ try{ log("synthesizing test voice…");
+  const j=await api("/api/live/voice/text",{message:"say only: नमस्ते, यह आवाज़ की जाँच है।",
+    system_prompt:"Repeat the user's text verbatim, nothing else.",language:$("#lang").value});
+  await playB64(j.audio_b64); log("test voice played"); }catch(e){ log("test voice error: "+e.message); alert(e.message);} };
+
+async function ensureMic(){
+  if(stream) return true;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); log("mic permission granted"); return true; }
+  catch(e){ log("mic denied: "+e.name); $("#ctxbad").classList.remove("hidden"); $("#ctxbad").className="box bad";
+    $("#ctxbad").textContent="Microphone blocked — click the mic icon in the address bar, allow it, reload."; return false; }
 }
 
-// ---- listen / turn loop ----
-function listen(){
-  if(!SR||!running) return;
-  clearInterim();
-  recog=new SR(); recog.lang=lang; recog.interimResults=true; recog.continuous=false;
-  let finalText="";
-  setStatus("listening","🎤 Listening — please speak…");
-  recog.onresult=e=>{ let it=""; for(let i=e.resultIndex;i<e.results.length;i++){ const t=e.results[i][0].transcript; if(e.results[i].isFinal) finalText+=t; else it+=t; } if(it) showInterim(it); };
-  recog.onerror=recogError;
-  recog.onend=()=>{ if(!running) return; const said=finalText.trim(); if(said){ clearInterim(); addMsg(said,"user"); handleUser(said); } else listen(); };
-  try{ recog.start(); }catch(err){ log("recog.start failed: "+err.message); setTimeout(listen,400); }
-}
-
-async function handleUser(text){
-  try{ const reply=await llm(text); history.push({role:"user",content:text}); history.push({role:"assistant",content:reply}); addMsg(reply.replace(/end_call_tool/gi,"").trim(),"bot"); await speak(reply); }
-  catch(err){ addMsg("[error] "+err.message,"bot"); log("LLM error: "+err.message); }
-  if(running) listen();
-}
-
-// ---- start / stop ----
 async function start(){
   if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
+  if(!(await ensureMic())) return;
   lang=$("#lang").value; history=[]; running=true;
-  if(SR && !(await requestMic())){ running=false; return; }
   $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
-  log("conversation started in "+lang);
+  setStatus("think","Preparing opening…"); busy=true; $("#micBtn").disabled=true;
   try{
-    let greeting=$("#firstmsg").value.trim();
-    if(!greeting){ setStatus("thinking","Preparing opening…"); greeting=await llm("[The call has just connected. Speak your opening greeting and consent line now.]"); }
-    history.push({role:"assistant",content:greeting}); addMsg(greeting,"bot"); await speak(greeting);
-  }catch(err){ addMsg("[error] "+err.message,"bot"); log("opening error: "+err.message); }
-  if(running) listen();
+    const j=await api("/api/live/voice/open",{system_prompt:$("#prompt").value,
+      first_message:$("#firstmsg").value.trim()||null,language:lang});
+    history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); await playB64(j.audio_b64);
+  }catch(e){ addMsg("[error] "+e.message,"bot"); log("open error: "+e.message); }
+  busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
 }
-function stop(){ running=false; try{recog&&recog.stop()}catch(_){}; speechSynthesis.cancel(); setStatus("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
-function interrupt(){ speechSynthesis.cancel(); if(running) listen(); }
 
-$("#startBtn").onclick=start; $("#stopBtn").onclick=stop; $("#interruptBtn").onclick=interrupt;
-$("#sendTyped").onclick=()=>{ const t=$("#typed").value.trim(); if(!t||!running)return; $("#typed").value=""; try{recog&&recog.abort()}catch(_){}; addMsg(t,"user"); handleUser(t); };
-$("#typed").addEventListener("keydown",e=>{ if(e.key==="Enter") $("#sendTyped").click(); });
+async function toggleMic(){
+  if(busy) return;
+  if(!recording){
+    if(!(await ensureMic())) return;
+    chunks=[]; rec=new MediaRecorder(stream); rec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+    rec.onstop=sendTurn; rec.start(); recording=true;
+    $("#micBtn").textContent="⏹ Tap to send"; $("#micBtn").classList.add("rec"); setStatus("rec","🔴 Recording — speak now…");
+  } else {
+    recording=false; $("#micBtn").textContent="🎤 Tap to speak"; $("#micBtn").classList.remove("rec");
+    try{ rec.stop(); }catch(_){}
+  }
+}
+async function sendTurn(){
+  busy=true; $("#micBtn").disabled=true; setStatus("think","Transcribing & thinking…");
+  try{
+    const b64=await blobToB64(new Blob(chunks,{type:"audio/webm"}));
+    const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang});
+    if(!j.transcript){ log("no speech detected"); setStatus("","Didn't catch that — tap and try again"); busy=false; $("#micBtn").disabled=false; return; }
+    addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
+    addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply});
+    await playB64(j.audio_b64);
+  }catch(e){ addMsg("[error] "+e.message,"bot"); log("turn error: "+e.message); }
+  busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
+}
+async function sendText(){
+  const t=$("#typed").value.trim(); if(!t||busy) return; $("#typed").value="";
+  addMsg(t,"user"); history.push({role:"user",content:t});
+  busy=true; setStatus("think","Thinking…");
+  try{ const j=await api("/api/live/voice/text",{message:t,system_prompt:$("#prompt").value,history,language:lang});
+    addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply}); await playB64(j.audio_b64);
+  }catch(e){ addMsg("[error] "+e.message,"bot"); }
+  busy=false; setStatus("","Your turn — tap to speak");
+}
+function stop(){ running=false; try{rec&&recording&&rec.stop()}catch(_){}; recording=false;
+  setStatus("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
+
+$("#startBtn").onclick=start;
+$("#micBtn").onclick=toggleMic;
+$("#stopBtn").onclick=stop;
+$("#replayBtn").onclick=()=>playB64(lastAudio);
+$("#sendTyped").onclick=sendText;
+$("#typed").addEventListener("keydown",e=>{ if(e.key==="Enter") sendText(); });
 </script>
 </body>
 </html>
