@@ -86,12 +86,20 @@ dtmf_mode=rfc4733
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+EOF
+    # Inbound matching: only needed to route INBOUND calls to this endpoint,
+    # and it resolves at load time — a DNS blip would break config. Opt-in via
+    # TRUNK_IDENTIFY_MATCH (the provider's signaling IP/CIDR or host). Outbound
+    # origination does not need it.
+    if [ -n "${TRUNK_IDENTIFY_MATCH:-}" ]; then
+      cat <<EOF
 
 [${TRUNK_NAME}]
 type=identify
 endpoint=${TRUNK_NAME}
-match=${TRUNK_SERVER}
+match=${TRUNK_IDENTIFY_MATCH}
 EOF
+    fi
     if [ "${TRUNK_REGISTER}" = "true" ]; then
       cat <<EOF
 
@@ -121,4 +129,18 @@ password=${ARI_PASSWORD}
 EOF
 
 echo "asterisk-entrypoint: trunk=${TRUNK_SERVER:-<none>} register=${TRUNK_REGISTER} did=${TRUNK_DID:-<unset>} ari_user=${ARI_USERNAME}"
+
+# ARI's /ari HTTP routes don't mount reliably on first load (they register
+# before the HTTP server is fully up). Reload res_ari once Asterisk is ready.
+(
+  for _ in $(seq 1 30); do
+    if asterisk -rx "core show uptime" >/dev/null 2>&1; then
+      asterisk -rx "module reload res_ari" >/dev/null 2>&1
+      echo "asterisk-entrypoint: res_ari reloaded (/ari mounted)"
+      break
+    fi
+    sleep 1
+  done
+) &
+
 exec asterisk -f -vvv -T -W
