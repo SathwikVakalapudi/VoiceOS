@@ -32,6 +32,31 @@ def test_no_campaign_keeps_default_persona():
     assert len(messages) == 2  # system + user, no greeting
 
 
+def test_per_call_settings_copy_loads_campaign_without_mutating_base(tmp_path):
+    # Mirrors serve_telephony.py: deep-copy the shared settings singleton and
+    # set campaign_file so every spawned pipeline runs the persona, while the
+    # cached global stays clean.
+    from voiceos.config.settings import Settings
+
+    path = tmp_path / "c.json"
+    path.write_text(
+        json.dumps({"system_prompt": "Survey persona.", "first_message": "Hi there."}),
+        encoding="utf-8",
+    )
+
+    base = Settings()
+    base_campaign = base.conversation.campaign_file  # whatever .env/defaults set
+
+    per_call = base.model_copy(deep=True)
+    per_call.conversation.campaign_file = str(path)
+
+    manager = ConversationManager(per_call.conversation)
+    assert manager.first_message == "Hi there."
+    assert manager.build_messages("ok")[0]["content"] == "Survey persona."
+    # Deep copy isolated the override — the base is unchanged.
+    assert base.conversation.campaign_file == base_campaign
+
+
 def test_shipped_rajasthan_campaign_parses():
     manager = ConversationManager(
         ConversationSettings(campaign_file=r"C:\Users\sathw\voice os\campaigns\rajasthan_survey.json")
