@@ -20,7 +20,8 @@ COPY docker/asterisk/extensions.conf /etc/asterisk/extensions.conf
 COPY docker/asterisk/rtp.conf        /etc/asterisk/rtp.conf
 COPY docker/asterisk/http.conf       /etc/asterisk/http.conf
 COPY docker/asterisk/entrypoint.sh   /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Strip any CR (defensive: if checked out CRLF on Windows) and make executable.
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # SIP signaling; RTP media (match rtp.conf); 8088 = ARI for outbound origination.
 EXPOSE 5060/udp 10000-10100/udp 8088/tcp

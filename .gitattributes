@@ -1,0 +1,4 @@
+# Shell scripts run as Linux container entrypoints — CRLF breaks the shebang
+# ("bad interpreter: /usr/bin/env bash^M"). Force LF regardless of host OS.
+*.sh text eol=lf
+docker/asterisk/entrypoint.sh text eol=lf
