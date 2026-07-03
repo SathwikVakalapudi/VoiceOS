@@ -37,13 +37,24 @@ _TTS_LANG = {
 }
 
 
-async def _retry(make_coro: Callable, tries: int = 3, delay: float = 0.8):
-    """Retry a coroutine factory on transient errors (flaky network to providers)."""
+async def _retry(make_coro: Callable, tries: int = 4, delay: float = 0.8):
+    """Retry a coroutine factory. Backs off on 429 (respecting Retry-After);
+    short retry on other transient (network) errors."""
+    import httpx
+
     last: Exception | None = None
-    for _ in range(tries):
+    for i in range(tries):
         try:
             return await make_coro()
-        except Exception as exc:  # noqa: BLE001 - providers raise varied network errors
+        except httpx.HTTPStatusError as exc:
+            last = exc
+            if exc.response.status_code == 429:
+                ra = exc.response.headers.get("retry-after", "")
+                wait = float(ra) if ra.replace(".", "", 1).isdigit() else delay * (2 ** i) + 2
+                await asyncio.sleep(min(wait, 20))
+            else:
+                raise
+        except Exception as exc:  # noqa: BLE001 - varied network errors
             last = exc
             await asyncio.sleep(delay)
     raise last  # type: ignore[misc]
@@ -199,6 +210,25 @@ def create_app(
         audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
         return _wav_b64(audio, tts.sample_rate)
 
+    async def _chat(system_prompt: str, history: list, user_message: str) -> str:
+        """One LLM turn: system + trimmed recent history + user. Trimming caps
+        tokens-per-request so long prompts don't blow the provider rate limit."""
+        import httpx
+
+        turns = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
+        msgs = [{"role": "system", "content": system_prompt}]
+        msgs += [{"role": m["role"], "content": m["content"]} for m in turns[-16:]]
+        msgs.append({"role": "user", "content": user_message})
+        llm = await _shared_llm()
+        try:
+            r = await _retry(lambda: llm.complete(msgs))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise HTTPException(429, "LLM (Groq) is rate-limited — wait ~30 s and try "
+                                    "again, or use a higher Groq tier / different LLM.")
+            raise HTTPException(502, f"LLM error: {exc}")
+        return r.get("content", "") if r else ""
+
     # ---- UI ----
     @app.get("/", response_class=HTMLResponse)
     async def index() -> FileResponse:
@@ -211,16 +241,10 @@ def create_app(
     # ---- Live voice-conversation tester (any prompt, any language) ----
     @app.post("/api/live/reply")
     async def live_reply(body: LiveTurn) -> dict:
-        messages = [{"role": "system", "content": body.system_prompt}]
+        hist = list(body.history)
         if body.first_message:
-            messages.append({"role": "assistant", "content": body.first_message})
-        for m in body.history:
-            if m.get("role") in ("user", "assistant") and m.get("content"):
-                messages.append({"role": m["role"], "content": m["content"]})
-        messages.append({"role": "user", "content": body.message})
-        llm = await _shared_llm()
-        reply = await _retry(lambda: llm.complete(messages))
-        return {"reply": reply.get("content", "") if reply else ""}
+            hist = [{"role": "assistant", "content": body.first_message}, *hist]
+        return {"reply": await _chat(body.system_prompt, hist, body.message)}
 
     # ---- Server-side voice (Sarvam STT + Cartesia TTS) — no browser speech ----
     @app.post("/api/live/voice/open")
@@ -228,14 +252,9 @@ def create_app(
         if body.first_message:
             reply = body.first_message
         else:
-            msgs = [
-                {"role": "system", "content": body.system_prompt},
-                {"role": "user", "content": "[The call has just connected. Speak your "
-                 "opening greeting and consent line now.]"},
-            ]
-            llm = await _shared_llm()
-            r = await _retry(lambda: llm.complete(msgs))
-            reply = r.get("content", "") if r else ""
+            reply = await _chat(body.system_prompt, [],
+                                "[The call has just connected. Speak your opening greeting "
+                                "and consent line now.]")
         return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
 
     @app.post("/api/live/voice/turn")
@@ -249,14 +268,7 @@ def create_app(
         transcript = (result.text or "").strip()
         if not transcript:
             return {"transcript": "", "reply": "", "audio_b64": ""}
-        msgs = [{"role": "system", "content": body.system_prompt}]
-        for m in body.history:
-            if m.get("role") in ("user", "assistant") and m.get("content"):
-                msgs.append({"role": m["role"], "content": m["content"]})
-        msgs.append({"role": "user", "content": transcript})
-        llm = await _shared_llm()
-        r = await _retry(lambda: llm.complete(msgs))
-        reply = r.get("content", "") if r else ""
+        reply = await _chat(body.system_prompt, body.history, transcript)
         return {
             "transcript": transcript,
             "reply": reply,
@@ -265,14 +277,7 @@ def create_app(
 
     @app.post("/api/live/voice/text")
     async def voice_text(body: VoiceText) -> dict:
-        msgs = [{"role": "system", "content": body.system_prompt}]
-        for m in body.history:
-            if m.get("role") in ("user", "assistant") and m.get("content"):
-                msgs.append({"role": m["role"], "content": m["content"]})
-        msgs.append({"role": "user", "content": body.message})
-        llm = await _shared_llm()
-        r = await _retry(lambda: llm.complete(msgs))
-        reply = r.get("content", "") if r else ""
+        reply = await _chat(body.system_prompt, body.history, body.message)
         return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
 
     # ---- Campaign CRUD ----
