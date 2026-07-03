@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VoiceOS · Live Conversation Tester</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2330;--border:#2a3240;--text:#e6edf3;
+        --muted:#8b98a9;--accent:#4f9cff;--accent2:#1f6feb;--ok:#3fb950;--warn:#d29922;--bad:#f85149;}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  header{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  main{max-width:900px;margin:0 auto;padding:20px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
+  label{display:block;color:var(--muted);font-size:12px;margin:12px 0 5px}
+  select,input,textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font:inherit}
+  textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
+  button{border:0;border-radius:8px;padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer}
+  .start{background:var(--ok);color:#06210e}
+  .stop{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+  .ghost{background:var(--panel2);color:var(--text)}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .status{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;background:var(--panel2);font-weight:600;margin-bottom:14px}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--muted)}
+  .dot.listening{background:var(--ok);box-shadow:0 0 12px var(--ok);animation:pulse 1.2s infinite}
+  .dot.speaking{background:var(--accent);box-shadow:0 0 12px var(--accent);animation:pulse .8s infinite}
+  .dot.thinking{background:var(--warn);box-shadow:0 0 12px var(--warn)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .chat{min-height:280px;max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
+  .msg{max-width:80%;padding:11px 15px;border-radius:14px;white-space:pre-wrap;font-size:15px}
+  .msg.bot{background:var(--panel2);align-self:flex-start;border-bottom-left-radius:3px}
+  .msg.user{background:var(--accent2);align-self:flex-end;border-bottom-right-radius:3px}
+  .msg.interim{opacity:.55;font-style:italic}
+  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  .warnbox{background:rgba(210,153,34,.12);border:1px solid var(--warn);color:#f0d69a;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
+  .hidden{display:none}
+  .txtrow{display:flex;gap:8px;margin-top:12px}
+  .txtrow input{flex:1}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="hdot"></span>
+  <h1>VoiceOS</h1><span class="sub">Live Conversation Tester — speak with your campaign agent</span>
+</header>
+<main>
+
+  <div id="unsupported" class="warnbox hidden">
+    ⚠️ Your browser doesn't support voice input. Use <b>Google Chrome</b> or <b>Microsoft Edge</b>.
+    You can still test by <b>typing</b> below.
+  </div>
+
+  <!-- SETUP -->
+  <div class="card" id="setup">
+    <div class="row">
+      <div>
+        <label>Language (voice + recognition)</label>
+        <select id="lang">
+          <option value="hi-IN">Hindi — हिन्दी</option>
+          <option value="te-IN">Telugu — తెలుగు</option>
+          <option value="en-IN">English (India)</option>
+          <option value="mr-IN">Marathi — मराठी</option>
+          <option value="ta-IN">Tamil — தமிழ்</option>
+          <option value="kn-IN">Kannada — ಕನ್ನಡ</option>
+          <option value="bn-IN">Bengali — বাংলা</option>
+          <option value="gu-IN">Gujarati — ગુજરાતી</option>
+        </select>
+      </div>
+      <div>
+        <label>Opening line (optional — spoken first). Leave blank to let the agent open from the prompt.</label>
+        <input id="firstmsg" placeholder="नमस्ते! …"/>
+      </div>
+    </div>
+    <label>Campaign prompt (paste the full agent instructions)</label>
+    <textarea id="prompt" rows="12" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
+    <div class="bar" style="margin-top:16px">
+      <button class="start" id="startBtn">▶  Start conversation</button>
+      <span class="hint" id="setupHint">Uses your browser's mic + voice in the chosen language, and VoiceOS's LLM as the brain.</span>
+    </div>
+  </div>
+
+  <!-- LIVE -->
+  <div class="card hidden" id="live">
+    <div class="status">
+      <span class="dot" id="sdot"></span><span id="statusText">Ready</span>
+    </div>
+    <div class="chat" id="chat"></div>
+    <div class="bar" style="margin-top:14px">
+      <button class="ghost" id="interruptBtn">✋ Interrupt</button>
+      <button class="stop" id="stopBtn">■ End test</button>
+      <span class="hint" id="liveHint"></span>
+    </div>
+    <div class="txtrow">
+      <input id="typed" placeholder="…or type a reply instead of speaking, then Enter"/>
+      <button class="ghost" id="sendTyped">Send</button>
+    </div>
+  </div>
+
+</main>
+<script>
+const $ = s=>document.querySelector(s);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog=null, history=[], running=false, lang="hi-IN", speaking=false;
+
+if(!SR) $("#unsupported").classList.remove("hidden");
+
+// ---- voices ----
+let voices=[];
+function loadVoices(){ voices = speechSynthesis.getVoices(); }
+loadVoices(); if(speechSynthesis.onvoiceschanged!==undefined) speechSynthesis.onvoiceschanged=loadVoices;
+function pickVoice(l){
+  return voices.find(v=>v.lang===l) || voices.find(v=>v.lang && v.lang.startsWith(l.split('-')[0])) || null;
+}
+
+// ---- UI helpers ----
+function setStatus(mode,text){
+  const d=$("#sdot"), h=$("#hdot");
+  d.className="dot "+(mode||""); h.className="dot "+(mode||"");
+  $("#statusText").textContent=text;
+}
+function addMsg(text,who){
+  const d=document.createElement("div"); d.className="msg "+who; d.textContent=text;
+  $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; return d;
+}
+let interimEl=null;
+function showInterim(text){
+  if(!interimEl){ interimEl=addMsg(text,"user interim"); } else interimEl.textContent=text;
+  $("#chat").scrollTop=$("#chat").scrollHeight;
+}
+function clearInterim(){ if(interimEl){ interimEl.remove(); interimEl=null; } }
+
+function clean(t){ return (t||"").replace(/end_call_tool|\bfunction\b/gi,"").trim(); }
+
+// ---- LLM ----
+async function llm(message){
+  setStatus("thinking","Thinking…");
+  const r = await fetch("/api/live/reply",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({system_prompt:$("#prompt").value, history, message})});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); }
+  return (await r.json()).reply || "";
+}
+
+// ---- speak then listen ----
+function speak(text){
+  return new Promise(res=>{
+    text=clean(text); if(!text){ res(); return; }
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text);
+    u.lang=lang; const v=pickVoice(lang); if(v) u.voice=v; u.rate=1.0;
+    speaking=true; setStatus("speaking","🔊 Agent speaking…");
+    u.onend=()=>{ speaking=false; res(); };
+    u.onerror=()=>{ speaking=false; res(); };
+    speechSynthesis.speak(u);
+  });
+}
+
+function listen(){
+  if(!SR || !running) return;
+  clearInterim();
+  recog = new SR();
+  recog.lang=lang; recog.interimResults=true; recog.continuous=false; recog.maxAlternatives=1;
+  let finalText="";
+  setStatus("listening","🎤 Listening — please speak…");
+  recog.onresult=e=>{
+    let interim="";
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal) finalText+=t; else interim+=t;
+    }
+    if(interim) showInterim(interim);
+  };
+  recog.onerror=e=>{ if(e.error==="no-speech" && running){ /* retry */ } };
+  recog.onend=()=>{
+    const said=finalText.trim();
+    if(!running) return;
+    if(said){ clearInterim(); addMsg(said,"user"); handleUser(said); }
+    else { listen(); }   // silence -> keep listening
+  };
+  try{ recog.start(); }catch(_){ setTimeout(listen,300); }
+}
+
+async function handleUser(text){
+  try{
+    const reply = await llm(text);
+    history.push({role:"user",content:text});
+    history.push({role:"assistant",content:reply});
+    addMsg(clean(reply),"bot");
+    await speak(reply);
+  }catch(err){ addMsg("[error] "+err.message,"bot"); }
+  if(running) listen();
+}
+
+// ---- start / stop ----
+async function start(){
+  const prompt=$("#prompt").value.trim();
+  if(!prompt){ alert("Paste the campaign prompt first."); return; }
+  lang=$("#lang").value; history=[]; running=true;
+  $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden");
+  $("#liveHint").textContent = lang+" · brain: VoiceOS LLM";
+  $("#chat").innerHTML="";
+  const opening=$("#firstmsg").value.trim();
+  try{
+    let greeting;
+    if(opening){ greeting=opening; }
+    else{ setStatus("thinking","Preparing opening…");
+          greeting = await llm("[The call has just connected. Speak your opening greeting and consent line now.]"); }
+    history.push({role:"assistant",content:greeting});
+    addMsg(clean(greeting),"bot");
+    await speak(greeting);
+  }catch(err){ addMsg("[error] "+err.message,"bot"); }
+  if(running) listen();
+}
+
+function stop(){
+  running=false; speaking=false;
+  try{ recog&&recog.stop(); }catch(_){}
+  speechSynthesis.cancel();
+  setStatus("","Ended");
+  $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden");
+}
+
+function interrupt(){
+  speechSynthesis.cancel(); speaking=false;
+  if(running) listen();
+}
+
+$("#startBtn").onclick=start;
+$("#stopBtn").onclick=stop;
+$("#interruptBtn").onclick=interrupt;
+$("#sendTyped").onclick=()=>{ const t=$("#typed").value.trim(); if(!t||!running)return;
+  $("#typed").value=""; try{recog&&recog.abort()}catch(_){}
+  addMsg(t,"user"); handleUser(t); };
+$("#typed").addEventListener("keydown",e=>{ if(e.key==="Enter") $("#sendTyped").click(); });
+</script>
+</body>
+</html>

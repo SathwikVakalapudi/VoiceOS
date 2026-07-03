@@ -156,3 +156,19 @@ def test_results_json_and_csv(client, tmp_path):
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200 and "Campaign Dashboard" in r.text
+
+
+def test_live_page_served(client):
+    r = client.get("/live")
+    assert r.status_code == 200 and "Live Conversation Tester" in r.text
+
+
+def test_live_reply_uses_custom_prompt_and_history(client):
+    r = client.post("/api/live/reply", json={
+        "system_prompt": "You are a Hindi survey caller.",
+        "history": [{"role": "assistant", "content": "नमस्ते!"},
+                    {"role": "user", "content": "जी बोलिए"}],
+        "message": "मैं तैयार हूँ",
+    })
+    assert r.status_code == 200
+    assert r.json()["reply"] == "Thank you, noted."   # FakeLLM canned reply

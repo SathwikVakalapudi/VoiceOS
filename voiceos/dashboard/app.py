@@ -49,6 +49,13 @@ class DryRunBody(BaseModel):
     require_consent: bool = True
 
 
+class LiveTurn(BaseModel):
+    system_prompt: str
+    history: list[dict] = []           # [{role: user|assistant, content: str}]
+    message: str
+    first_message: str | None = None
+
+
 def create_app(
     *,
     campaigns_dir: str = "campaigns",
@@ -80,10 +87,36 @@ def create_app(
         survey = SurveyDefinition.from_campaign_file(store.path_for(name))
         return survey.field_ids if survey else []
 
+    _llm_holder: dict = {}
+
+    async def _shared_llm():
+        if "llm" not in _llm_holder:
+            inst = llm_factory()
+            await inst.load()
+            _llm_holder["llm"] = inst
+        return _llm_holder["llm"]
+
     # ---- UI ----
     @app.get("/", response_class=HTMLResponse)
     async def index() -> FileResponse:
         return FileResponse(_STATIC / "index.html")
+
+    @app.get("/live", response_class=HTMLResponse)
+    async def live_page() -> FileResponse:
+        return FileResponse(_STATIC / "live.html")
+
+    # ---- Live voice-conversation tester (any prompt, any language) ----
+    @app.post("/api/live/reply")
+    async def live_reply(body: LiveTurn) -> dict:
+        messages = [{"role": "system", "content": body.system_prompt}]
+        if body.first_message:
+            messages.append({"role": "assistant", "content": body.first_message})
+        for m in body.history:
+            if m.get("role") in ("user", "assistant") and m.get("content"):
+                messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": "user", "content": body.message})
+        reply = await (await _shared_llm()).complete(messages)
+        return {"reply": reply.get("content", "") if reply else ""}
 
     # ---- Campaign CRUD ----
     @app.get("/api/campaigns")
