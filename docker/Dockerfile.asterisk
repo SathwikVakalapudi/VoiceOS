@@ -1,14 +1,17 @@
 # Asterisk media server for local end-to-end testing. Terminates SIP/RTP from
 # a softphone and bridges each call's audio to VoiceOS over AudioSocket.
 #
-# Debian's `asterisk` package is Asterisk 20 (LTS); `asterisk-modules` provides
-# res_pjsip (SIP) and the AudioSocket modules (res_audiosocket / app_audiosocket).
-# If AudioSocket is missing on your platform, verify with:
+# Base = Ubuntu 22.04, whose `universe` ships Asterisk 18 (res_pjsip + the
+# AudioSocket modules res_audiosocket / app_audiosocket / chan_audiosocket).
+# NOTE: Debian bookworm (12) removed the asterisk package before release, so a
+# debian:bookworm base cannot `apt-get install asterisk` — use Ubuntu here.
+# Verify AudioSocket is present with:
 #     docker compose exec asterisk asterisk -rx "module show like audiosocket"
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
 
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        asterisk asterisk-modules \
+        asterisk ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Override only the configs we care about; keep the package's other defaults
