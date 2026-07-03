@@ -1,0 +1,30 @@
+# GPU overlay — opt-in NVIDIA acceleration for the VoiceOS container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Requires: an NVIDIA GPU + driver with container support (Docker Desktop WSL2
+# GPU on Windows, or nvidia-container-toolkit on Linux). Verify passthrough:
+#   docker run --rm --gpus all voiceos nvidia-smi -L
+#
+# This reserves the GPU and switches STT from cloud (Sarvam) to LOCAL
+# faster-whisper on CUDA. faster-whisper's ctranslate2 backend bundles CUDA 12
+# libs, so it runs on drivers as old as 556.x (CUDA 12.5). The GTX 1650 has
+# only 4 GB VRAM -> use `base`/`small` with int8_float16, not medium/large.
+#
+# NOTE ON LANGUAGE: local Whisper base/small is weaker at Telugu than the
+# Sarvam cloud model. For the Telugu survey keep the CPU/Sarvam stack (base
+# compose); use this overlay for English or when a bigger local model fits.
+services:
+  voiceos:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      VOICEOS_STT__PROVIDER: whisper        # local faster-whisper (not cloud Sarvam)
+      VOICEOS_STT__MODEL: base              # downloads into the hf-cache volume
+      VOICEOS_STT__DEVICE: cuda             # run on the GPU
+      VOICEOS_STT__COMPUTE_TYPE: int8_float16   # fits 4 GB VRAM

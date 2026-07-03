@@ -88,6 +88,33 @@ published in compose and must match `docker/asterisk/rtp.conf`.
 
 ---
 
+## 1c. GPU acceleration (optional)
+
+The base stack runs CPU-only (portable). To use an NVIDIA GPU for local
+Whisper STT, add the opt-in overlay:
+
+```bash
+docker run --rm --gpus all voiceos nvidia-smi -L      # confirm passthrough first
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+The overlay reserves the GPU and switches STT to **local faster-whisper on
+CUDA**. What actually uses the GPU:
+
+- **faster-whisper (STT)** → its ctranslate2 backend bundles CUDA 12 libs, so
+  it runs even on older drivers (e.g. 556.x / CUDA 12.5). This is the real win.
+- **silero-VAD (torch)** stays on CPU — the default torch wheel targets CUDA 13
+  and needs driver R580+, but VAD is tiny and real-time on CPU anyway. (Update
+  the driver to R580+ if you want torch on the GPU too.)
+
+**VRAM matters.** A GTX 1650 has 4 GB — use `base`/`small` with
+`int8_float16` (set in the overlay), not `medium`/`large`. **Language:** local
+Whisper base/small is weaker at Telugu than cloud Sarvam; for the Telugu survey
+keep the CPU/Sarvam base stack and use the GPU overlay for English or bigger
+local models.
+
+---
+
 ## 2. Asterisk (AudioSocket) — the production path
 
 ### 2a. SIP trunk (`pjsip.conf`) — Telnyx example, IP-authenticated
