@@ -61,9 +61,15 @@ class _StreamSource(AudioSource):
 
 
 class _StreamSink(AudioSink):
-    def __init__(self, send: SendFrame, encoding: str) -> None:
+    def __init__(
+        self,
+        send: SendFrame,
+        encoding: str,
+        on_interrupt: Callable[[], None] | None = None,
+    ) -> None:
         self._send = send
         self._encoding = encoding
+        self._on_interrupt = on_interrupt
         self._encoder: TelephonyEncoder | None = None
         self._interrupted = False
 
@@ -78,9 +84,11 @@ class _StreamSink(AudioSink):
         await self._send(self._encoder.encode(audio))
 
     def interrupt(self) -> None:
-        # Stop emitting; the server adapter should also flush the media
-        # server's buffer (Twilio "clear" / stop streaming) for a clean cut.
+        # Stop emitting locally; `on_interrupt` also flushes the media server's
+        # already-buffered audio (Twilio "clear" / stop streaming) for a clean cut.
         self._interrupted = True
+        if self._on_interrupt is not None:
+            self._on_interrupt()
 
     def resume(self) -> None:
         self._interrupted = False
@@ -97,12 +105,13 @@ class MediaStreamTransport(AudioTransport):
         input_sample_rate: int = 16000,
         frame_size: int = 512,
         encoding: str = "mulaw",
+        on_interrupt: Callable[[], None] | None = None,
     ) -> None:
         self._input_sample_rate = input_sample_rate
         self._decoder = TelephonyDecoder(target_rate=input_sample_rate, encoding=encoding)
         self._rechunker = _Rechunker(frame_size)
         self._source = _StreamSource()
-        self._sink = _StreamSink(send, encoding)
+        self._sink = _StreamSink(send, encoding, on_interrupt)
 
     @property
     def source(self) -> AudioSource:

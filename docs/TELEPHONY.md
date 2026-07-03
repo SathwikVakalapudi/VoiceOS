@@ -31,7 +31,8 @@ Caller <-> PSTN/cellular <-> [SIP trunk: Telnyx/Plivo]
 | Bridge | Media server | Transport | VoiceOS status |
 |---|---|---|---|
 | **AudioSocket** (recommended) | Asterisk | TCP, linear 8k PCM, trivial framing | **Implemented + tested** (`voiceos/telephony/audiosocket.py`) |
-| **mod_audio_stream** | FreeSWITCH | WebSocket, mu-law 8k | Reuse `MediaStreamTransport(encoding="mulaw")` + a WS adapter |
+| **mod_audio_stream** | FreeSWITCH | WebSocket, mu-law 8k | **Implemented + tested** (`voiceos/telephony/websocket.py`, `--protocol binary`) |
+| **Twilio Media Streams** | Twilio | WebSocket, JSON/base64 mu-law | **Implemented + tested** (`voiceos/telephony/websocket.py`, `--protocol twilio`) |
 | **ARI externalMedia** | Asterisk | RTP to your app | Heaviest; only if you want raw RTP |
 
 AudioSocket is the simplest robust bidirectional bridge and needs no extra
@@ -152,10 +153,33 @@ originate {origination_caller_id_number=+15559876543,ignore_early_media=true}\
   sofia/gateway/telnyx/+15551234567 &socket('voiceos-host:8090 async full')
 ```
 
-On the VoiceOS side, run a WebSocket server that, per connection, builds
-`MediaStreamTransport(send, encoding="mulaw")` and a `VoicePipeline`, decodes
-inbound `media` frames with `transport.on_inbound_audio(payload)`, and sends
-TTS back through `send`. (`websockets` or `fastapi` needed — not yet a dep.)
+On the VoiceOS side, run the WebSocket bridge — it builds a
+`MediaStreamTransport` + `VoicePipeline` per connection, decodes inbound audio,
+and streams TTS back, including a barge-in "clear" flush:
+
+```bash
+pip install websockets                        # optional telephony dep
+python serve_telephony.py --bridge websocket --protocol binary --port 8091
+#   --protocol binary  -> FreeSWITCH mod_audio_stream (raw mu-law frames)
+#   --protocol twilio  -> Twilio Media Streams (JSON/base64 mu-law envelope)
+```
+
+Confirm your `mod_audio_stream` build's exact frame format; the wire framing
+is isolated in `MediaProtocol` (`voiceos/telephony/websocket.py`) so only that
+small class needs adjusting if your module differs.
+
+## 3d. Outbound campaigns (both bridges)
+
+`outbound_campaign.py` originates a list of contacts through the trunk with a
+**TCPA consent gate** (skips contacts without `consented: true`), bounded
+concurrency, and pacing. Start `serve_telephony.py` first (it answers the
+calls), then:
+
+```bash
+export ARI_BASE_URL=http://asterisk:8088 ARI_USER=ari ARI_PASSWORD=secret
+python outbound_campaign.py contacts.json \
+    --trunk telnyx --caller-id +15559876543 --max-concurrency 20 --delay 0.5
+```
 
 ---
 

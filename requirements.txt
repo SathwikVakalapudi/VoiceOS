@@ -11,6 +11,10 @@ silero-vad>=5.1
 # Telephony transcoding uses stdlib audioop, removed in 3.13 (PEP 594)
 audioop-lts>=0.2; python_version >= "3.13"
 
+# Telephony WebSocket bridge (FreeSWITCH mod_audio_stream / Twilio Media
+# Streams). Optional — the AudioSocket bridge (Asterisk) needs no extra deps.
+websockets>=12.0
+
 # STT
 faster-whisper>=1.0
 

@@ -1,0 +1,5 @@
+[
+  {"number": "+15551234567", "name": "Asha", "consented": true},
+  {"number": "+15559876543", "name": "Ravi", "consented": true},
+  {"number": "+15550001111", "name": "No-consent example", "consented": false}
+]
