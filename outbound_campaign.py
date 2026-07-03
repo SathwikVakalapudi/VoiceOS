@@ -51,25 +51,36 @@ def load_contacts(path: str) -> list[Contact]:
 
 
 async def run(args) -> None:
-    base_url = os.environ.get("ARI_BASE_URL")
-    user = os.environ.get("ARI_USER")
-    password = os.environ.get("ARI_PASSWORD")
-    if not (base_url and user and password):
-        sys.exit("set ARI_BASE_URL, ARI_USER, ARI_PASSWORD in the environment")
-
     contacts = load_contacts(args.contacts)
-    originate = make_ari_originator(
-        trunk=args.trunk, context=args.context,
-        base_url=base_url, username=user, password=password,
-    )
+
+    if args.dry_run:
+        # No calls are placed, so no trunk/ARI credentials are needed.
+        async def originate(number, caller_id):  # pragma: no cover - never called
+            raise AssertionError("dry-run must not originate")
+    else:
+        base_url = os.environ.get("ARI_BASE_URL")
+        user = os.environ.get("ARI_USER")
+        password = os.environ.get("ARI_PASSWORD")
+        if not (base_url and user and password):
+            sys.exit("set ARI_BASE_URL, ARI_USER, ARI_PASSWORD in the environment")
+        originate = make_ari_originator(
+            trunk=args.trunk, context=args.context,
+            base_url=base_url, username=user, password=password,
+        )
+
     runner = CampaignRunner(
         originate, caller_id=args.caller_id,
         max_concurrency=args.max_concurrency, call_delay=args.delay,
-        require_consent=not args.no_consent_check,
+        require_consent=not args.no_consent_check, dry_run=args.dry_run,
         on_result=lambda r: print(f"  {r.status:20} {r.contact.number}"),
     )
 
-    print(f"Dialing {len(contacts)} contacts through '{args.trunk}' as {args.caller_id}\n")
+    verb = "Previewing" if args.dry_run else "Dialing"
+    print(f"{verb} {len(contacts)} contacts through '{args.trunk}' as {args.caller_id}")
+    if args.dry_run:
+        print("DRY RUN — no calls will be placed.\n")
+    else:
+        print()
     results = await runner.run(contacts)
 
     tally: dict[str, int] = {}
@@ -89,6 +100,10 @@ def main() -> None:
     parser.add_argument(
         "--no-consent-check", action="store_true",
         help="dial contacts even without consented:true (you own the legal basis)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="preview who would be dialed vs skipped; place no calls (no ARI creds needed)",
     )
     args = parser.parse_args()
 

@@ -14,6 +14,10 @@ production guardrails wired in by default:
 The actual origination is injected (`originate` coroutine) so the runner is
 testable without a live media server; `make_ari_originator()` builds one from
 `ari_originate` for the Asterisk/ARI path.
+
+Set `dry_run=True` to preview a run: the consent gate still applies, so you
+see exactly who would be dialed (status "dry_run") versus skipped, but no call
+is placed.
 """
 
 from __future__ import annotations
@@ -60,12 +64,14 @@ class CampaignRunner:
         max_concurrency: int = 20,
         call_delay: float = 0.0,
         require_consent: bool = True,
+        dry_run: bool = False,
         on_result: Callable[[CallResult], None] | None = None,
     ) -> None:
         self._originate = originate
         self._caller_id = caller_id
         self._call_delay = call_delay
         self._require_consent = require_consent
+        self._dry_run = dry_run
         self._on_result = on_result
         self._sem = asyncio.Semaphore(max_concurrency)
 
@@ -73,6 +79,10 @@ class CampaignRunner:
         if self._require_consent and not contact.consented:
             logger.warning("skipping %s: no prior express consent on file", contact.number)
             result = CallResult(contact, "skipped_no_consent")
+        elif self._dry_run:
+            # Consent-passed and would be dialed — but place no call.
+            logger.info("[dry-run] would call %s as %s", contact.number, self._caller_id)
+            result = CallResult(contact, "dry_run")
         else:
             async with self._sem:
                 try:
@@ -94,7 +104,7 @@ class CampaignRunner:
         tasks = []
         for contact in contacts:
             tasks.append(asyncio.create_task(self._place(contact)))
-            if self._call_delay and contact is not contacts[-1]:
+            if self._call_delay and not self._dry_run and contact is not contacts[-1]:
                 await asyncio.sleep(self._call_delay)  # pace origination
         return await asyncio.gather(*tasks)
 

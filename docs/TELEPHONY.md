@@ -181,6 +181,14 @@ python outbound_campaign.py contacts.json \
     --trunk telnyx --caller-id +15559876543 --max-concurrency 20 --delay 0.5
 ```
 
+Preview first with `--dry-run` — the consent gate still runs, so you see who
+would be dialed vs skipped, but no call is placed (no ARI creds needed):
+
+```bash
+python outbound_campaign.py contacts.json \
+    --trunk telnyx --caller-id +15559876543 --dry-run
+```
+
 ---
 
 ## 4. Scaling to 100+ concurrent calls

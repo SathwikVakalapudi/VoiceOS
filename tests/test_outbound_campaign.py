@@ -88,6 +88,35 @@ async def test_on_result_callback_fires_per_contact():
     assert {r.contact.number for r in seen} == {"+x", "+y"}
 
 
+async def test_dry_run_places_no_calls_but_still_applies_consent_gate():
+    dialed = []
+
+    async def originate(number, caller_id):
+        dialed.append(number)                                  # must never happen
+        return {"id": number}
+
+    runner = CampaignRunner(originate, caller_id="+1", dry_run=True)
+    results = await runner.run(
+        [Contact("+ok", consented=True), Contact("+nc", consented=False)]
+    )
+
+    assert dialed == []                                        # nothing originated
+    status = {r.contact.number: r.status for r in results}
+    assert status == {"+ok": "dry_run", "+nc": "skipped_no_consent"}
+    assert not any(r.ok for r in results)                      # dry_run is not "originated"
+
+
+async def test_dry_run_with_consent_check_off_previews_everyone():
+    async def originate(number, caller_id):
+        raise AssertionError("should not be called in dry run")
+
+    runner = CampaignRunner(
+        originate, caller_id="+1", dry_run=True, require_consent=False
+    )
+    results = await runner.run([Contact("+a"), Contact("+b")])
+    assert all(r.status == "dry_run" for r in results)
+
+
 async def test_ari_originator_builds_pjsip_endpoint_through_trunk():
     seen = {}
 
