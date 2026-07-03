@@ -115,6 +115,55 @@ local models.
 
 ---
 
+## 1d. Make a real call (your SIP trunk)
+
+The compose Asterisk renders its trunk + ARI config from `.env` at start
+(`docker/asterisk/entrypoint.sh`), so your credentials never touch git. To place
+real inbound/outbound calls:
+
+**1. Put your trunk details in `.env`** (see `.env.example`):
+```bash
+TRUNK_SERVER=sip.telnyx.com          # your provider's SIP host
+TRUNK_USERNAME=...                   # trunk credential
+TRUNK_PASSWORD=...
+TRUNK_DID=+15559876543               # a number you own -> outbound caller ID
+TRUNK_REGISTER=true                  # false for IP-auth trunks
+PUBLIC_IP=203.0.113.10               # your public IP (NAT two-way audio)
+ARI_USERNAME=ari
+ARI_PASSWORD=a-strong-secret
+ARI_BASE_URL=http://localhost:8088   # outbound_campaign.py posts here
+ARI_USER=ari
+```
+
+**2. Networking (the hard part behind NAT).** Forward these from your router to
+this machine, and set `PUBLIC_IP`: `5060/udp` (SIP) and `10000-10100/udp` (RTP).
+Without a reachable media path you get one-way / no audio. On a cloud VM with a
+public IP this is automatic.
+
+**3. Bring it up and confirm the trunk registered:**
+```bash
+docker compose up --build -d
+docker compose exec asterisk asterisk -rx "pjsip show registrations"   # -> Registered
+docker compose exec asterisk asterisk -rx "pjsip show endpoints"        # trunk = Available
+```
+
+**4. Place an outbound call** — test to **your own phone first**:
+```bash
+python outbound_campaign.py contacts.json \
+    --trunk "$TRUNK_NAME" --caller-id "$TRUNK_DID"
+# contacts.json: [{"number":"+15551112222","name":"me","consented":true}]
+```
+Asterisk dials your number through the trunk; when you answer, the call bridges
+to VoiceOS and the campaign persona starts talking. Watch:
+`docker compose logs -f voiceos asterisk`.
+
+> 🚨 **Compliance.** Under the US TCPA (FCC, Feb 2024) an AI voice is
+> "artificial" — outbound needs **prior express consent**, and the consent gate
+> enforces it. Test only to numbers you own. Present a DID you own with proper
+> STIR/SHAKEN attestation, and set provider spend caps to prevent toll fraud.
+
+---
+
 ## 2. Asterisk (AudioSocket) — the production path
 
 ### 2a. SIP trunk (`pjsip.conf`) — Telnyx example, IP-authenticated

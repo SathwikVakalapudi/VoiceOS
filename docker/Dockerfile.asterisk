@@ -14,14 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         asterisk ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Override only the configs we care about; keep the package's other defaults
-# (asterisk.conf, modules autoload, codecs, etc.).
-COPY docker/asterisk/pjsip.conf     /etc/asterisk/pjsip.conf
+# Static configs. pjsip.conf and ari.conf are generated at start by the
+# entrypoint from environment (so trunk/ARI secrets stay out of the image).
 COPY docker/asterisk/extensions.conf /etc/asterisk/extensions.conf
-COPY docker/asterisk/rtp.conf       /etc/asterisk/rtp.conf
+COPY docker/asterisk/rtp.conf        /etc/asterisk/rtp.conf
+COPY docker/asterisk/http.conf       /etc/asterisk/http.conf
+COPY docker/asterisk/entrypoint.sh   /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# SIP signaling; RTP media range must match rtp.conf and the compose port map.
-EXPOSE 5060/udp 10000-10100/udp
+# SIP signaling; RTP media (match rtp.conf); 8088 = ARI for outbound origination.
+EXPOSE 5060/udp 10000-10100/udp 8088/tcp
 
-# Foreground, verbose, no color — logs go to `docker compose logs asterisk`.
-CMD ["asterisk", "-f", "-vvv", "-T", "-W"]
+ENTRYPOINT ["/entrypoint.sh"]

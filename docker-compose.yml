@@ -38,9 +38,23 @@ services:
       dockerfile: docker/Dockerfile.asterisk
     depends_on:
       - voiceos
+    # Trunk + ARI config is rendered from these at start (values come from .env,
+    # which is gitignored). Leave TRUNK_* empty to run softphone-only (local test).
+    environment:
+      TRUNK_NAME: ${TRUNK_NAME:-trunk}
+      TRUNK_SERVER: ${TRUNK_SERVER:-}         # e.g. sip.telnyx.com
+      TRUNK_USERNAME: ${TRUNK_USERNAME:-}
+      TRUNK_PASSWORD: ${TRUNK_PASSWORD:-}
+      TRUNK_DID: ${TRUNK_DID:-}               # your number, E.164, used as caller ID
+      TRUNK_REGISTER: ${TRUNK_REGISTER:-true}
+      PUBLIC_IP: ${PUBLIC_IP:-}               # set for NAT (home/laptop) two-way audio
+      ARI_USERNAME: ${ARI_USERNAME:-ari}
+      ARI_PASSWORD: ${ARI_PASSWORD:-change-me}
+      SOFTPHONE_PASSWORD: ${SOFTPHONE_PASSWORD:-verysecret}
     ports:
-      - "5060:5060/udp"            # SIP signaling for the softphone
-      - "10000-10100:10000-10100/udp"  # RTP media (must match rtp.conf)
+      - "5060:5060/udp"                 # SIP signaling
+      - "10000-10100:10000-10100/udp"   # RTP media (must match rtp.conf)
+      - "8088:8088/tcp"                 # ARI — outbound_campaign.py posts here
     restart: unless-stopped
 
 volumes:
