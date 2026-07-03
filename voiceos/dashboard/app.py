@@ -177,16 +177,21 @@ def create_app(
             _llm_holder["llm"] = inst
         return _llm_holder["llm"]
 
-    async def _shared_stt():
+    async def _shared_stt(language: str):
         if settings is None:
             raise HTTPException(503, "voice STT not configured (no settings)")
-        if "stt" not in _llm_holder:
+        key = f"stt:{language}"
+        if key not in _llm_holder:
             from voiceos.pipeline.pipeline import create_stt
 
-            inst = create_stt(settings)
+            s2 = settings.model_copy(deep=True)
+            # Force the language instead of autodetect — Sarvam otherwise
+            # mis-detects Hindi as Kannada/Bengali/Gujarati/etc.
+            s2.stt.sarvam_language = language
+            inst = create_stt(s2)
             await inst.load()
-            _llm_holder["stt"] = inst
-        return _llm_holder["stt"]
+            _llm_holder[key] = inst
+        return _llm_holder[key]
 
     async def _shared_tts(language: str):
         if settings is None:
@@ -229,6 +234,18 @@ def create_app(
             raise HTTPException(502, f"LLM error: {exc}")
         return r.get("content", "") if r else ""
 
+    @app.on_event("startup")
+    async def _prewarm() -> None:
+        # Load LLM/STT/TTS clients up front so the first conversation turn isn't
+        # a cold start (Hindi is the common default; other languages load lazily).
+        try:
+            await _shared_llm()
+            if settings is not None:
+                await _shared_stt("hi-IN")
+                await _shared_tts("hi-IN")
+        except Exception:  # never block startup on a provider hiccup
+            pass
+
     # ---- UI ----
     @app.get("/", response_class=HTMLResponse)
     async def index() -> FileResponse:
@@ -263,7 +280,7 @@ def create_app(
             pcm = _decode_audio(base64.b64decode(body.audio_b64))
         except Exception as exc:
             raise HTTPException(400, f"could not decode audio: {exc}")
-        stt = await _shared_stt()
+        stt = await _shared_stt(body.language)
         result = await _retry(lambda: stt.transcribe(pcm, 16000))
         transcript = (result.text or "").strip()
         if not transcript:

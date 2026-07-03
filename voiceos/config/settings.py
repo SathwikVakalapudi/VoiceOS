@@ -84,7 +84,7 @@ class STTSettings(BaseModel):
 
     # sarvam: hosted Saaras/Saarika API (great for Indian accents/languages)
     sarvam_api_key: str = ""
-    sarvam_model: str = "saaras:v3"
+    sarvam_model: str = "saarika:v2.5"  # transcription (saaras = translation!)
     sarvam_language: str | None = None  # BCP-47 like "en-IN"; None -> autodetect
     sarvam_timeout_s: float = 12.0     # a turn stalled longer than this is dead anyway
 
