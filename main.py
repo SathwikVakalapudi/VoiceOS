@@ -16,6 +16,13 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+try:
+    from dotenv import load_dotenv  # .env authoritative over stale shell env vars
+
+    load_dotenv(override=True)
+except ImportError:
+    pass
+
 from voiceos.config.settings import get_settings
 from voiceos.pipeline.events import Event, EventBus, EventType
 from voiceos.pipeline.pipeline import VoicePipeline

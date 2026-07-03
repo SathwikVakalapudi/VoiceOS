@@ -15,6 +15,15 @@ from __future__ import annotations
 
 import argparse
 
+# Make .env authoritative: a stale VOICEOS_* left in the shell environment must
+# not shadow an edited .env (e.g. switching LLM provider). Load before settings.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(override=True)
+except ImportError:
+    pass
+
 from voiceos.config.settings import get_settings
 from voiceos.dashboard.app import create_app
 from voiceos.utils.logging import setup_logging

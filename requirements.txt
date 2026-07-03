@@ -4,6 +4,7 @@ sounddevice>=0.4.6
 httpx>=0.27
 pydantic>=2.7
 pydantic-settings>=2.2
+python-dotenv>=1.0
 
 # VAD (silero-vad pulls in torch; onnxruntime comes with faster-whisper)
 silero-vad>=5.1

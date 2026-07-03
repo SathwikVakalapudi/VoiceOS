@@ -69,7 +69,15 @@ def create_stt(settings: Settings) -> BaseSTT:
 
 
 def create_llm(settings: Settings) -> BaseLLM:
-    primary = QwenLLM(settings.llm)
+    keys = settings.llm.api_keys or [settings.llm.api_key]
+    if len(keys) > 1:
+        from voiceos.llm.rotating import RotatingLLM
+
+        primary: BaseLLM = RotatingLLM(
+            [QwenLLM(settings.llm.model_copy(update={"api_key": k})) for k in keys]
+        )
+    else:
+        primary = QwenLLM(settings.llm)
     if not settings.llm.fallbacks:
         return primary
     from voiceos.llm.fallback import FallbackLLM

@@ -107,6 +107,9 @@ class LLMSettings(BaseModel):
 
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "not-needed"
+    # Extra keys to round-robin across (e.g. several free-tier accounts) so no
+    # single key's rate limit is hit as fast. Empty -> just use api_key.
+    api_keys: list[str] = Field(default_factory=list)
     model: str = "qwen3:14b"
     temperature: float = 0.7
     max_tokens: int = 512
