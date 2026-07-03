@@ -88,9 +88,9 @@ const $=s=>document.querySelector(s);
 let lang="hi-IN", running=false, history=[], phase="idle";
 let stream=null, ac=null, proc=null, srcNode=null;
 // VAD state
-let inSpeech=false, utter=[], preroll=[], speechMs=0, silenceMs=0, noiseFloor=0.01, sensMargin=0.02;
+let inSpeech=false, utter=[], preroll=[], speechMs=0, silenceMs=0, speechRun=0, noiseFloor=0.01, sensMargin=0.02;
 // tuning
-const PREROLL_MS=350, END_SILENCE_MS=850, MIN_SPEECH_MS=350, MIN_LEVEL=0.012;
+const PREROLL_MS=350, END_SILENCE_MS=850, MIN_SPEECH_MS=300, MIN_LEVEL=0.012, ONSET_MS=90;
 $("#sens").oninput=()=>{ sensMargin=0.006*(11-$("#sens").value)/5 + 0.004; $("#sensVal").textContent="(threshold "+sensMargin.toFixed(3)+")"; };
 $("#sens").oninput();
 
@@ -130,9 +130,14 @@ async function streamTTS(text){
 function rms(f){ let s=0; for(let i=0;i<f.length;i++) s+=f[i]*f[i]; return Math.sqrt(s/f.length); }
 function resample16k(f32, srcRate){
   const ratio=srcRate/16000, outLen=Math.floor(f32.length/ratio), out=new Int16Array(outLen);
-  for(let i=0;i<outLen;i++){ const idx=i*ratio, i0=Math.floor(idx), frac=idx-i0;
-    let s=f32[i0]*(1-frac)+((f32[i0+1]!==undefined?f32[i0+1]:f32[i0])*frac);
-    s=Math.max(-1,Math.min(1,s)); out[i]=s<0?s*32768:s*32767; }
+  // Average each source window (anti-aliasing low-pass) instead of decimating —
+  // pure decimation folds >8kHz energy back as noise and wrecks STT. ratio==1
+  // (16k context) makes this a plain float->int16 copy.
+  for(let i=0;i<outLen;i++){
+    const start=Math.floor(i*ratio), end=Math.max(start+1, Math.floor((i+1)*ratio));
+    let sum=0,n=0; for(let j=start;j<end&&j<f32.length;j++){ sum+=f32[j]; n++; }
+    let s=n?sum/n:0; s=Math.max(-1,Math.min(1,s)); out[i]=s<0?s*32768:s*32767;
+  }
   return out;
 }
 function wavBlob(int16){
@@ -146,6 +151,7 @@ function wavBlob(int16){
 }
 
 // ---- the audio callback: continuous capture + VAD + pre-roll ----
+function trimPreroll(frameMs){ let ms=preroll.length*frameMs; while(ms>PREROLL_MS){ preroll.shift(); ms-=frameMs; } }
 function onAudio(e){
   if(!running) return;
   const frame=new Float32Array(e.inputBuffer.getChannelData(0));  // copy (buffer is reused)
@@ -156,17 +162,17 @@ function onAudio(e){
   $("#thr").style.left=Math.min(100,thr*350)+"%";
   if(phase!=="listen" && phase!=="rec") return;         // don't capture while thinking/speaking
 
-  if(level>thr){                                          // --- speech ---
-    if(!inSpeech){ inSpeech=true; utter=preroll.slice(); speechMs=0; setPhase("rec","🎙️ बोलते रहिए… / Listening to you"); }
-    utter.push(frame); speechMs+=frameMs; silenceMs=0;
-  } else {                                                // --- silence ---
-    if(inSpeech){
-      utter.push(frame); silenceMs+=frameMs;
-      if(silenceMs>=END_SILENCE_MS){ inSpeech=false; endUtter(); }
-    } else {
-      preroll.push(frame); let ms=preroll.length*frameMs; while(ms>PREROLL_MS){ preroll.shift(); ms-=frameMs; }
-      noiseFloor=0.92*noiseFloor+0.08*level;              // adapt to ambient
+  if(level>thr){                                          // --- voiced frame ---
+    silenceMs=0;
+    if(inSpeech){ utter.push(frame); speechMs+=frameMs; }
+    else{                                                 // onset debounce: need ONSET_MS of voice
+      speechRun+=frameMs; preroll.push(frame); trimPreroll(frameMs);
+      if(speechRun>=ONSET_MS){ inSpeech=true; utter=preroll.slice(); speechMs=speechRun; setPhase("rec","🎙️ बोलते रहिए… / Go on…"); }
     }
+  } else {                                                // --- silent frame ---
+    speechRun=0;
+    if(inSpeech){ utter.push(frame); silenceMs+=frameMs; if(silenceMs>=END_SILENCE_MS){ inSpeech=false; endUtter(); } }
+    else{ preroll.push(frame); trimPreroll(frameMs); noiseFloor=0.92*noiseFloor+0.08*level; }
   }
 }
 
@@ -195,12 +201,16 @@ async function sendUtter(blob){
 
 async function startCall(){
   if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
-  lang=$("#lang").value; history=[]; running=true; inSpeech=false; utter=[]; preroll=[]; noiseFloor=0.01;
+  lang=$("#lang").value; history=[]; running=true; inSpeech=false; utter=[]; preroll=[]; speechRun=0; noiseFloor=0.01;
   try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
   catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it in the address bar and reload."; running=false; return; }
-  ac=new (window.AudioContext||window.webkitAudioContext)(); await ac.resume();
+  // Capture natively at 16 kHz (the browser's high-quality resampler) so STT
+  // gets clean audio — avoids the aliasing from decimating 48k->16k ourselves.
+  const AC=window.AudioContext||window.webkitAudioContext;
+  try{ ac=new AC({sampleRate:16000}); }catch(_){ ac=new AC(); }
+  await ac.resume();
   srcNode=ac.createMediaStreamSource(stream);
-  proc=ac.createScriptProcessor(2048,1,1); proc.onaudioprocess=onAudio;
+  proc=ac.createScriptProcessor(1024,1,1); proc.onaudioprocess=onAudio;  // ~64ms frames @16k
   const mute=ac.createGain(); mute.gain.value=0;                 // route through silent gain so the callback runs w/o feedback
   srcNode.connect(proc); proc.connect(mute); mute.connect(ac.destination);
   log("mic @ "+ac.sampleRate+"Hz");
