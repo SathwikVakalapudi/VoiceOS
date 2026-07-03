@@ -239,6 +239,48 @@ python outbound_campaign.py contacts.json \
 
 ---
 
+## 3e. Post-call survey results (structured extraction)
+
+The assistant *runs* the survey conversation; to *capture the answers*, add a
+machine-readable `survey` block to the campaign JSON. After each call ends,
+VoiceOS runs a post-call LLM pass over the transcript and writes one structured
+record per call (robust to barge-in, re-asks, and messy/other-language speech —
+the same approach as Vapi's post-call analysis).
+
+Campaign JSON gains a `survey` alongside the persona:
+```json
+{
+  "system_prompt": "...", "first_message": "...",
+  "survey": {
+    "name": "rajasthan-political-survey",
+    "questions": [
+      {"id": "q1_like_modi", "prompt": "How much they like Modi",
+       "type": "choice", "options": ["a lot", "somewhat", "not much", "not at all"]},
+      {"id": "q6_age", "prompt": "Respondent's age", "type": "number"},
+      {"id": "q7_religion", "prompt": "Religion", "type": "text"}
+    ]
+  }
+}
+```
+`prompt` is a short English hint for the extractor; the AI still asks in the
+campaign's language. `campaigns/rajasthan_survey.json` ships all 8 fields.
+
+Serving auto-enables collection when a `survey` is present:
+```bash
+python serve_telephony.py --campaign campaigns/rajasthan_survey.json \
+    --results results/survey.jsonl        # one JSON line appended per call
+```
+Export a flat CSV (one column per field) for analysis:
+```bash
+python export_results.py results/survey.jsonl \
+    --campaign campaigns/rajasthan_survey.json --out results/survey.csv
+```
+
+> Results are call data / opinion data (possible PII). `results/` is
+> git-ignored; store and retain it per your consent notice and local rules.
+
+---
+
 ## 4. Scaling to 100+ concurrent calls
 
 The media plane is cheap; **the GPU-bound STT/LLM/TTS is the real bottleneck.**

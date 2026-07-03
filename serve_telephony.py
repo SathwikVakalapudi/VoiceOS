@@ -43,9 +43,25 @@ async def run(args) -> None:
         settings = settings.model_copy(deep=True)
         settings.conversation.campaign_file = args.campaign
 
+    # Post-call survey extraction, if the campaign defines a `survey` block.
+    collector = None
+    if args.campaign:
+        from voiceos.survey import ResultStore, SurveyCollector, SurveyDefinition
+
+        survey = SurveyDefinition.from_campaign_file(args.campaign)
+        if survey is not None:
+            collector = SurveyCollector(
+                survey, ResultStore(args.results), settings=settings
+            )
+
     def make_session(transport):
         # One independent pipeline per call, bound to that call's audio.
-        return VoicePipeline(settings, transport=transport)
+        pipeline = VoicePipeline(settings, transport=transport)
+        if collector is not None:
+            from voiceos.survey import SurveySession
+
+            return SurveySession(pipeline, collector)
+        return pipeline
 
     if args.bridge == "audiosocket":
         from voiceos.telephony.audiosocket import AudioSocketServer
@@ -71,6 +87,9 @@ async def run(args) -> None:
         print(f"Campaign: {args.campaign}")
         if opening:
             print(f"  opening line: {opening[:80]}{'…' if len(opening) > 80 else ''}")
+    if collector is not None:
+        print(f"  survey: {collector._survey.name} "
+              f"({len(collector._survey.questions)} fields) -> {args.results}")
     print("Point your media server here (see docs/TELEPHONY.md). Ctrl+C to quit.\n")
     try:
         await server.serve_forever()
@@ -93,6 +112,10 @@ def main() -> None:
     parser.add_argument(
         "--campaign", metavar="PATH",
         help="persona JSON {system_prompt, first_message, error_message} run on every call",
+    )
+    parser.add_argument(
+        "--results", metavar="PATH", default="results/survey.jsonl",
+        help="where to append extracted survey results (if the campaign has a `survey` block)",
     )
     args = parser.parse_args()
     if args.port is None:

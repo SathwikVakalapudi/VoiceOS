@@ -17,3 +17,6 @@ models/
 # Debug/scratch API dumps
 sarvam_resp.json
 sarvam_stream.txt
+
+# Extracted survey results (call data / possible PII)
+results/
