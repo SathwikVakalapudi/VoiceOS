@@ -109,6 +109,12 @@ let history=[], running=false, lang="hi-IN", stream=null, rec=null, chunks=[], r
 function log(m){ const d=$("#diag"); d.textContent+=("["+new Date().toLocaleTimeString()+"] "+m+"\n"); d.scrollTop=d.scrollHeight; }
 function setStatus(mode,t){ $("#sdot").className="dot "+(mode||""); $("#hdot").className="dot "+(mode||""); $("#statusText").textContent=t; }
 function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; }
+function showTimings(t){
+  const parts=[]; if(t.stt!=null)parts.push("STT "+t.stt+"s"); if(t.llm!=null)parts.push("LLM "+t.llm+"s");
+  if(t.tts!=null)parts.push("TTS "+t.tts+"s"); if(t.total!=null)parts.push("total "+t.total+"s");
+  const d=document.createElement("div"); d.className="hint"; d.style.alignSelf="flex-start"; d.style.marginTop="-6px";
+  d.textContent="⏱ "+parts.join(" · "); $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight;
+}
 
 if(!window.isSecureContext){ $("#ctxbad").classList.remove("hidden");
   $("#ctxbad").innerHTML="⚠️ <b>Open this on <u>http://localhost:8080/live</u></b> (not an IP address) — the mic only works there. You're on: <code>"+location.origin+"</code>"; }
@@ -170,9 +176,12 @@ async function sendTurn(){
   try{
     const b64=await blobToB64(new Blob(chunks,{type:"audio/webm"}));
     const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang});
+    if(j.error){ if(j.transcript) addMsg(j.transcript,"user"); addMsg("⚠️ "+j.error,"bot"); log("turn error: "+j.error);
+      busy=false; $("#micBtn").disabled=false; setStatus("","Tap to speak again"); return; }
     if(!j.transcript){ log("no speech detected"); setStatus("","Didn't catch that — tap and try again"); busy=false; $("#micBtn").disabled=false; return; }
     addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
     addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply});
+    if(j.timings) showTimings(j.timings);
     await playB64(j.audio_b64);
   }catch(e){ addMsg("[error] "+e.message,"bot"); log("turn error: "+e.message); }
   busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");

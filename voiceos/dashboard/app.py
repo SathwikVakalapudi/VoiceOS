@@ -20,9 +20,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
+import time
 import wave
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException
@@ -236,15 +240,20 @@ def create_app(
 
     @app.on_event("startup")
     async def _prewarm() -> None:
-        # Load LLM/STT/TTS clients up front so the first conversation turn isn't
-        # a cold start (Hindi is the common default; other languages load lazily).
+        # Warm the LLM/STT/TTS *connections* with a real tiny call so the first
+        # conversation turn isn't a cold start (the first live LLM call otherwise
+        # spikes ~4-5s on TLS/connection setup).
         try:
-            await _shared_llm()
+            llm = await _shared_llm()
+            await _retry(lambda: llm.complete([{"role": "user", "content": "hi"}]))
             if settings is not None:
-                await _shared_stt("hi-IN")
                 await _shared_tts("hi-IN")
+                stt = await _shared_stt("hi-IN")
+                import numpy as _np
+
+                await stt.transcribe(_np.zeros(16000, dtype=_np.int16), 16000)
         except Exception:  # never block startup on a provider hiccup
-            pass
+            logger.info("prewarm incomplete (will warm on first request)")
 
     # ---- UI ----
     @app.get("/", response_class=HTMLResponse)
@@ -276,20 +285,46 @@ def create_app(
 
     @app.post("/api/live/voice/turn")
     async def voice_turn(body: VoiceTurn) -> dict:
+        t = {}
+        t0 = time.perf_counter()
         try:
             pcm = _decode_audio(base64.b64decode(body.audio_b64))
         except Exception as exc:
             raise HTTPException(400, f"could not decode audio: {exc}")
-        stt = await _shared_stt(body.language)
-        result = await _retry(lambda: stt.transcribe(pcm, 16000))
-        transcript = (result.text or "").strip()
-        if not transcript:
-            return {"transcript": "", "reply": "", "audio_b64": ""}
-        reply = await _chat(body.system_prompt, body.history, transcript)
+        t["decode"] = time.perf_counter() - t0
+
+        transcript = ""
+        try:
+            mark = time.perf_counter()
+            stt = await _shared_stt(body.language)
+            result = await _retry(lambda: stt.transcribe(pcm, 16000))
+            t["stt"] = time.perf_counter() - mark
+            transcript = (result.text or "").strip()
+            if not transcript:
+                return {"transcript": "", "reply": "", "audio_b64": "",
+                        "timings": {k: round(v, 2) for k, v in t.items()}}
+
+            mark = time.perf_counter()
+            reply = await _chat(body.system_prompt, body.history, transcript)
+            t["llm"] = time.perf_counter() - mark
+
+            mark = time.perf_counter()
+            audio = await _synthesize(reply, body.language)
+            t["tts"] = time.perf_counter() - mark
+        except HTTPException:
+            raise  # already a clear message (e.g. rate limit)
+        except Exception as exc:  # network blip to a provider — don't break the call
+            logger.warning("voice turn failed at a provider: %s: %s", type(exc).__name__, exc)
+            return {"transcript": transcript, "reply": "", "audio_b64": "",
+                    "error": "network hiccup reaching the voice service — please tap and speak again",
+                    "timings": {k: round(v, 2) for k, v in t.items()}}
+        t["total"] = time.perf_counter() - t0
+        logger.info("turn timings (s): %s", {k: round(v, 2) for k, v in t.items()})
         return {
             "transcript": transcript,
             "reply": reply,
-            "audio_b64": await _synthesize(reply, body.language),
+            "audio_b64": audio,
+            "timings": {k: round(v, 2) for k, v in t.items()},
         }
 
     @app.post("/api/live/voice/text")
