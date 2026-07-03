@@ -271,14 +271,16 @@ def create_app(
         except Exception:  # never block startup on a provider hiccup
             logger.info("prewarm incomplete (will warm on first request)")
 
-    # ---- UI ----
+    # ---- UI ---- (no-store so the browser never serves a stale tester page)
+    _NOCACHE = {"Cache-Control": "no-store, max-age=0"}
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> FileResponse:
-        return FileResponse(_STATIC / "index.html")
+        return FileResponse(_STATIC / "index.html", headers=_NOCACHE)
 
     @app.get("/live", response_class=HTMLResponse)
     async def live_page() -> FileResponse:
-        return FileResponse(_STATIC / "live.html")
+        return FileResponse(_STATIC / "live.html", headers=_NOCACHE)
 
     # ---- Live voice-conversation tester (any prompt, any language) ----
     @app.post("/api/live/reply")
