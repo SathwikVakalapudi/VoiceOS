@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel
 
 # UI BCP-47 code -> Cartesia language code (Sarvam STT autodetects, no map needed).
@@ -125,12 +130,19 @@ class VoiceOpen(BaseModel):
     system_prompt: str
     first_message: str | None = None
     language: str = "hi-IN"
+    stream: bool = False               # if true, return reply text only (audio streamed)
 
 
 class VoiceTurn(BaseModel):
     audio_b64: str                     # browser mic recording (webm/opus)
     system_prompt: str
     history: list[dict] = []
+    language: str = "hi-IN"
+    stream: bool = False               # if true, return transcript+reply only
+
+
+class TtsStream(BaseModel):
+    text: str
     language: str = "hi-IN"
 
 
@@ -281,7 +293,26 @@ def create_app(
             reply = await _chat(body.system_prompt, [],
                                 "[The call has just connected. Speak your opening greeting "
                                 "and consent line now.]")
+        if body.stream:
+            return {"reply": reply, "audio_b64": ""}
         return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
+
+    @app.post("/api/live/voice/tts-stream")
+    async def tts_stream(body: TtsStream) -> StreamingResponse:
+        tts = await _shared_tts(body.language)
+        clean = (body.text or "").replace("end_call_tool", "").strip()
+
+        async def gen():
+            if not clean:
+                return
+            async for chunk in tts.synthesize(clean):
+                yield np.ascontiguousarray(chunk, dtype="<i2").tobytes()
+
+        return StreamingResponse(
+            gen(),
+            media_type="application/octet-stream",
+            headers={"X-Sample-Rate": str(tts.sample_rate)},
+        )
 
     @app.post("/api/live/voice/turn")
     async def voice_turn(body: VoiceTurn) -> dict:
@@ -308,9 +339,12 @@ def create_app(
             reply = await _chat(body.system_prompt, body.history, transcript)
             t["llm"] = time.perf_counter() - mark
 
-            mark = time.perf_counter()
-            audio = await _synthesize(reply, body.language)
-            t["tts"] = time.perf_counter() - mark
+            if body.stream:  # audio fetched separately via /tts-stream
+                audio = ""
+            else:
+                mark = time.perf_counter()
+                audio = await _synthesize(reply, body.language)
+                t["tts"] = time.perf_counter() - mark
         except HTTPException:
             raise  # already a clear message (e.g. rate limit)
         except Exception as exc:  # network blip to a provider — don't break the call

@@ -126,6 +126,42 @@ function playB64(b64){ if(!b64){ return Promise.resolve(); } lastAudio=b64;
   return new Promise(res=>{ const a=new Audio("data:audio/wav;base64,"+b64); a.onended=res; a.onerror=res;
     setStatus("play","🔊 Agent speaking…"); a.play().catch(e=>{ log("audio play blocked: "+e.message); res(); }); }); }
 
+// --- streaming TTS: play Cartesia chunks as they arrive (Web Audio) ---
+let audioCtx=null, nextTime=0, ttsAbort=null, activeSources=[];
+function ensureCtx(){ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); return audioCtx; }
+function stopTTS(){ if(ttsAbort){ try{ttsAbort.abort()}catch(_){}; ttsAbort=null; }
+  activeSources.forEach(s=>{try{s.stop()}catch(_){}}); activeSources=[]; if(audioCtx) nextTime=audioCtx.currentTime; }
+async function streamTTS(text){
+  if(!text) return;
+  const ctx=ensureCtx(); try{ await ctx.resume(); }catch(_){}
+  ttsAbort=new AbortController();
+  let res;
+  try{ res=await fetch("/api/live/voice/tts-stream",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text,language:lang}),signal:ttsAbort.signal}); }
+  catch(e){ if(e.name!=="AbortError") log("tts fetch: "+e.message); return; }
+  const rate=parseInt(res.headers.get("X-Sample-Rate")||"24000");
+  const reader=res.body.getReader();
+  nextTime=Math.max(nextTime, ctx.currentTime+0.06);
+  setStatus("play","🔊 Agent speaking…");
+  let leftover=new Uint8Array(0), t0=performance.now(), first=true;
+  try{
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      let buf=new Uint8Array(leftover.length+value.length); buf.set(leftover,0); buf.set(value,leftover.length);
+      const usable=buf.length-(buf.length%2);
+      if(usable<2){ leftover=buf; continue; }
+      const pcm=new Int16Array(buf.buffer.slice(0,usable)); leftover=buf.slice(usable);
+      const f32=new Float32Array(pcm.length); for(let i=0;i<pcm.length;i++) f32[i]=pcm[i]/32768;
+      const ab=ctx.createBuffer(1,f32.length,rate); ab.getChannelData(0).set(f32);
+      const src=ctx.createBufferSource(); src.buffer=ab; src.connect(ctx.destination);
+      src.start(nextTime); nextTime+=ab.duration; activeSources.push(src);
+      if(first){ first=false; log("first audio @ "+Math.round(performance.now()-t0)+"ms"); }
+    }
+  }catch(e){ if(e.name!=="AbortError") log("tts stream: "+e.message); }
+  ttsAbort=null;
+  const remain=(nextTime-ctx.currentTime)*1000; if(remain>0) await new Promise(r=>setTimeout(r,remain));
+}
+
 async function api(path,body){
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); }
@@ -153,8 +189,8 @@ async function start(){
   setStatus("think","Preparing opening…"); busy=true; $("#micBtn").disabled=true;
   try{
     const j=await api("/api/live/voice/open",{system_prompt:$("#prompt").value,
-      first_message:$("#firstmsg").value.trim()||null,language:lang});
-    history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); await playB64(j.audio_b64);
+      first_message:$("#firstmsg").value.trim()||null,language:lang,stream:true});
+    history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); await streamTTS(j.reply);
   }catch(e){ addMsg("[error] "+e.message,"bot"); log("open error: "+e.message); }
   busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
 }
@@ -163,6 +199,7 @@ async function toggleMic(){
   if(busy) return;
   if(!recording){
     if(!(await ensureMic())) return;
+    stopTTS();  // barge-in: cut the agent's audio when you start speaking
     chunks=[]; rec=new MediaRecorder(stream); rec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
     rec.onstop=sendTurn; rec.start(); recording=true;
     $("#micBtn").textContent="⏹ Tap to send"; $("#micBtn").classList.add("rec"); setStatus("rec","🔴 Recording — speak now…");
@@ -175,14 +212,14 @@ async function sendTurn(){
   busy=true; $("#micBtn").disabled=true; setStatus("think","Transcribing & thinking…");
   try{
     const b64=await blobToB64(new Blob(chunks,{type:"audio/webm"}));
-    const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang});
+    const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang,stream:true});
     if(j.error){ if(j.transcript) addMsg(j.transcript,"user"); addMsg("⚠️ "+j.error,"bot"); log("turn error: "+j.error);
       busy=false; $("#micBtn").disabled=false; setStatus("","Tap to speak again"); return; }
     if(!j.transcript){ log("no speech detected"); setStatus("","Didn't catch that — tap and try again"); busy=false; $("#micBtn").disabled=false; return; }
     addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
     addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply});
     if(j.timings) showTimings(j.timings);
-    await playB64(j.audio_b64);
+    await streamTTS(j.reply);
   }catch(e){ addMsg("[error] "+e.message,"bot"); log("turn error: "+e.message); }
   busy=false; $("#micBtn").disabled=false; setStatus("","Your turn — tap to speak");
 }
@@ -195,7 +232,7 @@ async function sendText(){
   }catch(e){ addMsg("[error] "+e.message,"bot"); }
   busy=false; setStatus("","Your turn — tap to speak");
 }
-function stop(){ running=false; try{rec&&recording&&rec.stop()}catch(_){}; recording=false;
+function stop(){ running=false; stopTTS(); try{rec&&recording&&rec.stop()}catch(_){}; recording=false;
   setStatus("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
 
 $("#startBtn").onclick=start;
