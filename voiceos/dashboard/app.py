@@ -29,7 +29,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 import numpy as np
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -297,6 +297,89 @@ def create_app(
     @app.get("/live", response_class=HTMLResponse)
     async def live_page() -> FileResponse:
         return FileResponse(_STATIC / "live.html", headers=_NOCACHE)
+
+    # ---- Streaming call: continuous mic in → Silero VAD → STT → LLM → TTS out ----
+    @app.websocket("/ws/call")
+    async def call_ws(ws: WebSocket) -> None:
+        await ws.accept()
+        try:
+            cfg = await ws.receive_json()
+        except Exception:
+            await ws.close()
+            return
+        lang = cfg.get("language", "hi-IN")
+        prompt = cfg.get("system_prompt", "")
+        history: list[dict] = []
+
+        from voiceos.dashboard.streaming_vad import StreamingEndpointer
+        from voiceos.vad.silero_vad import SileroVAD
+
+        vad = SileroVAD(settings.vad)      # per-connection state
+        await vad.load()
+        endpointer = StreamingEndpointer(vad, min_silence_ms=550)
+        stt = await _shared_stt(lang)
+        speaking = False
+
+        async def say(text: str) -> None:
+            nonlocal speaking
+            speaking = True
+            tts = await _shared_tts(lang)
+            await ws.send_json({"type": "audio_start", "rate": tts.sample_rate})
+            clean = (text or "").replace("end_call_tool", "").strip()
+            try:
+                async for chunk in tts.synthesize(clean):
+                    await ws.send_bytes(np.ascontiguousarray(chunk, dtype="<i2").tobytes())
+            except Exception:
+                pass
+            await ws.send_json({"type": "audio_end"})
+            endpointer.reset()             # discard any echo captured during playback
+            speaking = False
+            await ws.send_json({"type": "listening"})
+
+        # opening line
+        try:
+            reply = cfg.get("first_message") or await _chat(
+                prompt, [], "[The call has just connected. Speak your opening greeting "
+                "and consent line now.]")
+            history.append({"role": "assistant", "content": reply})
+            await ws.send_json({"type": "reply", "text": reply})
+            await say(reply)
+        except Exception as exc:
+            await ws.send_json({"type": "error", "text": str(exc)})
+
+        try:
+            while True:
+                msg = await ws.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                data = msg.get("bytes")
+                if data is None or speaking:      # ignore mic while the agent talks
+                    continue
+                for utt in endpointer.push(np.frombuffer(data, dtype="<i2")):
+                    await ws.send_json({"type": "thinking"})
+                    try:
+                        res = await _retry(lambda: stt.transcribe(utt, 16000))
+                        transcript = (res.text or "").strip()
+                    except Exception:
+                        transcript = ""
+                    if not transcript:
+                        await ws.send_json({"type": "listening"})
+                        continue
+                    await ws.send_json({"type": "transcript", "text": transcript})
+                    try:
+                        reply = await _chat(prompt, history, transcript)
+                    except HTTPException as he:
+                        await ws.send_json({"type": "error", "text": he.detail})
+                        await ws.send_json({"type": "listening"})
+                        continue
+                    history.append({"role": "user", "content": transcript})
+                    history.append({"role": "assistant", "content": reply})
+                    await ws.send_json({"type": "reply", "text": reply})
+                    await say(reply)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
 
     # ---- Live voice-conversation tester (any prompt, any language) ----
     @app.post("/api/live/reply")

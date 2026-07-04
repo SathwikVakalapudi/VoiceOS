@@ -18,8 +18,7 @@
   textarea{resize:vertical;font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
   .row{display:flex;gap:14px;flex-wrap:wrap}.row>div{flex:1;min-width:180px}
   button{border:0;border-radius:8px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer}
-  button:disabled{opacity:.5;cursor:default}
-  .call{background:var(--ok);color:#06210e}.end{background:var(--bad);color:#fff}.ghost{background:var(--panel2);color:var(--text)}
+  .call{background:var(--ok);color:#06210e}.end{background:var(--bad);color:#fff}
   .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .status{display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:10px;background:var(--panel2);font-weight:600;margin-bottom:14px;font-size:15px}
   .orb{width:16px;height:16px;border-radius:50%;background:var(--muted);flex:none}
@@ -28,10 +27,9 @@
   .orb.think{background:var(--warn);box-shadow:0 0 14px var(--warn)}
   .orb.speak{background:var(--accent);box-shadow:0 0 16px var(--accent);animation:pulse .8s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
-  .meter{flex:1;height:8px;background:#0b0e13;border-radius:4px;overflow:hidden;min-width:90px;position:relative}
-  .meter>#meterFill{height:100%;width:0;background:var(--ok);transition:width .04s}
-  .meter>#thr{position:absolute;top:0;bottom:0;width:2px;background:var(--warn)}
-  .chat{min-height:230px;max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
+  .meter{flex:1;height:8px;background:#0b0e13;border-radius:4px;overflow:hidden;min-width:90px}
+  .meter>#meterFill{height:100%;width:0;background:var(--ok);transition:width .05s}
+  .chat{min-height:230px;max-height:46vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:6px}
   .msg{max-width:82%;padding:11px 15px;border-radius:14px;white-space:pre-wrap;font-size:15px}
   .msg.bot{background:var(--panel2);align-self:flex-start;border-bottom-left-radius:3px}
   .msg.user{background:var(--accent2);align-self:flex-end;border-bottom-right-radius:3px}
@@ -39,220 +37,106 @@
   .box{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px}
   .box.bad{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#f6b0ac}
   .hidden{display:none}
-  #diag{background:#05070a;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;
-        font-size:11.5px;color:#9fb2c8;max-height:140px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
+  #diag{background:#05070a;border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:#9fb2c8;max-height:130px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
 </style>
 </head>
 <body>
-<header><span class="orb" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Call — talk naturally, it listens and replies on its own</span></header>
+<header><span class="orb" id="hdot"></span><h1>VoiceOS</h1><span class="sub">Live Call — server-side Silero VAD · talk naturally</span></header>
 <main>
   <div id="ctxbad" class="box bad hidden"></div>
-
   <div class="card" id="setup">
     <div class="row">
       <div><label>Language</label>
         <select id="lang">
-          <option value="hi-IN">Hindi — हिन्दी</option>
-          <option value="en-IN">English</option>
-          <option value="te-IN">Telugu — తెలుగు</option>
-          <option value="ta-IN">Tamil — தமிழ்</option>
-          <option value="bn-IN">Bengali — বাংলা</option>
-          <option value="gu-IN">Gujarati — ગુજરાતી</option>
+          <option value="hi-IN">Hindi — हिन्दी</option><option value="en-IN">English</option>
+          <option value="te-IN">Telugu — తెలుగు</option><option value="ta-IN">Tamil — தமிழ்</option>
+          <option value="bn-IN">Bengali — বাংলা</option><option value="gu-IN">Gujarati — ગુజરાતી</option>
         </select>
       </div>
       <div><label>Opening line (optional)</label><input id="firstmsg" placeholder="leave blank to auto-open"/></div>
     </div>
     <label>Campaign prompt</label>
     <textarea id="prompt" rows="9" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
-    <label>Mic sensitivity <span id="sensVal" class="hint"></span></label>
-    <input type="range" id="sens" min="1" max="10" value="5"/>
-    <label style="margin-top:10px"><input type="checkbox" id="nsChk" checked style="width:auto"/> Noise reduction (turn off if it distorts your voice)</label>
-    <div class="bar" style="margin-top:14px">
+    <div class="bar" style="margin-top:16px">
       <button class="call" id="startBtn">📞  Start call</button>
-      <span class="hint">Just talk — no buttons during the call. Watch the meter move when you speak.</span>
+      <span class="hint">Real speech detection runs on the server (Silero VAD). Just talk.</span>
     </div>
   </div>
-
   <div class="card hidden" id="live">
     <div class="status"><span class="orb" id="orb"></span><span id="statusText">Connecting…</span>
-      <div class="meter"><div id="meterFill"></div><div id="thr"></div></div></div>
+      <div class="meter"><div id="meterFill"></div></div></div>
     <div class="chat" id="chat"></div>
-    <div class="bar" style="margin-top:14px">
-      <button class="end" id="endBtn">■ End call</button>
-      <button class="ghost" id="hearBtn" disabled>🔉 Hear last capture</button>
-      <span class="hint" id="liveHint"></span>
-    </div>
+    <div class="bar" style="margin-top:14px"><button class="end" id="endBtn">■ End call</button><span class="hint" id="liveHint"></span></div>
   </div>
   <div id="diag"></div>
 </main>
 <script>
 const $=s=>document.querySelector(s);
-let lang="hi-IN", running=false, history=[], phase="idle";
-let stream=null, ac=null, proc=null, srcNode=null, lastCaptureUrl=null;
-// VAD state
-let inSpeech=false, utter=[], preroll=[], speechMs=0, silenceMs=0, speechRun=0, noiseFloor=0.01, sensMargin=0.02;
-// tuning
-const PREROLL_MS=350, END_SILENCE_MS=850, MIN_SPEECH_MS=300, MIN_LEVEL=0.012, ONSET_MS=90;
-$("#sens").oninput=()=>{ sensMargin=0.006*(11-$("#sens").value)/5 + 0.004; $("#sensVal").textContent="(threshold "+sensMargin.toFixed(3)+")"; };
-$("#sens").oninput();
-
+let ws=null, ac=null, proc=null, srcNode=null, stream=null, running=false;
+let ttsRate=24000, nextTime=0;
 function log(m){ const d=$("#diag"); d.textContent+=("["+new Date().toLocaleTimeString()+"] "+m+"\n"); d.scrollTop=d.scrollHeight; }
-function setPhase(p,txt){ phase=p; const c=({listen:"listen",rec:"rec",think:"think",speak:"speak"})[p]||"";
-  $("#orb").className="orb "+c; $("#hdot").className="orb "+c; $("#statusText").textContent=txt; }
+function setPhase(p,t){ const c=({listen:"listen",think:"think",speak:"speak"})[p]||""; $("#orb").className="orb "+c; $("#hdot").className="orb "+c; $("#statusText").textContent=t; }
 function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; }
-function showTimings(t){ const p=[]; if(t.stt!=null)p.push("STT "+t.stt+"s"); if(t.llm!=null)p.push("LLM "+t.llm+"s"); if(t.total!=null)p.push("total "+t.total+"s");
-  const d=document.createElement("div"); d.className="hint"; d.style.marginTop="-6px"; d.textContent="⏱ "+p.join(" · "); $("#chat").appendChild(d); }
-
 if(!window.isSecureContext){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").innerHTML="⚠️ Open on <b>http://localhost:8080/live</b> (not an IP) — mic needs that."; }
 
-async function api(path,body){ const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||r.statusText); } return r.json(); }
-const blobToB64=b=>new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result.split(",")[1]); fr.readAsDataURL(b); });
-
-// ---- streaming TTS playback ----
-let nextTime=0, ttsAbort=null, activeSources=[];
-function stopTTS(){ if(ttsAbort){try{ttsAbort.abort()}catch(_){}; ttsAbort=null;} activeSources.forEach(s=>{try{s.stop()}catch(_){}}); activeSources=[]; if(ac) nextTime=ac.currentTime; }
-async function streamTTS(text){
-  if(!text) return; ttsAbort=new AbortController(); let res;
-  try{ res=await fetch("/api/live/voice/tts-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text,language:lang}),signal:ttsAbort.signal}); }catch(e){ return; }
-  const rate=parseInt(res.headers.get("X-Sample-Rate")||"24000"); const reader=res.body.getReader();
-  nextTime=Math.max(nextTime, ac.currentTime+0.06); let leftover=new Uint8Array(0);
-  try{ while(true){ const {done,value}=await reader.read(); if(done)break;
-    let buf=new Uint8Array(leftover.length+value.length); buf.set(leftover,0); buf.set(value,leftover.length);
-    const usable=buf.length-(buf.length%2); if(usable<2){leftover=buf;continue;}
-    const pcm=new Int16Array(buf.buffer.slice(0,usable)); leftover=buf.slice(usable);
-    const f=new Float32Array(pcm.length); for(let i=0;i<pcm.length;i++) f[i]=pcm[i]/32768;
-    const ab=ac.createBuffer(1,f.length,rate); ab.getChannelData(0).set(f);
-    const s=ac.createBufferSource(); s.buffer=ab; s.connect(ac.destination); s.start(nextTime); nextTime+=ab.duration; activeSources.push(s);
-  } }catch(e){}
-  ttsAbort=null; const remain=(nextTime-ac.currentTime)*1000; if(remain>0) await new Promise(r=>setTimeout(r,remain));
-}
-
-// ---- audio helpers ----
-function rms(f){ let s=0; for(let i=0;i<f.length;i++) s+=f[i]*f[i]; return Math.sqrt(s/f.length); }
-function resample16k(f32, srcRate){
-  const ratio=srcRate/16000, outLen=Math.floor(f32.length/ratio), out=new Int16Array(outLen);
-  // Average each source window (anti-aliasing low-pass) instead of decimating —
-  // pure decimation folds >8kHz energy back as noise and wrecks STT. ratio==1
-  // (16k context) makes this a plain float->int16 copy.
-  for(let i=0;i<outLen;i++){
-    const start=Math.floor(i*ratio), end=Math.max(start+1, Math.floor((i+1)*ratio));
-    let sum=0,n=0; for(let j=start;j<end&&j<f32.length;j++){ sum+=f32[j]; n++; }
-    let s=n?sum/n:0; s=Math.max(-1,Math.min(1,s)); out[i]=s<0?s*32768:s*32767;
-  }
-  return out;
-}
-function wavBlob(int16){
-  const buf=new ArrayBuffer(44+int16.length*2), dv=new DataView(buf);
-  const ws=(o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i));};
-  ws(0,"RIFF"); dv.setUint32(4,36+int16.length*2,true); ws(8,"WAVE"); ws(12,"fmt ");
-  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true); dv.setUint32(24,16000,true);
-  dv.setUint32(28,32000,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true); ws(36,"data"); dv.setUint32(40,int16.length*2,true);
-  for(let i=0;i<int16.length;i++) dv.setInt16(44+i*2,int16[i],true);
-  return new Blob([buf],{type:"audio/wav"});
-}
-
-// ---- the audio callback: continuous capture + VAD + pre-roll ----
-function trimPreroll(frameMs){ let ms=preroll.length*frameMs; while(ms>PREROLL_MS){ preroll.shift(); ms-=frameMs; } }
-function onAudio(e){
-  if(!running) return;
-  const frame=new Float32Array(e.inputBuffer.getChannelData(0));  // copy (buffer is reused)
-  const frameMs=frame.length/ac.sampleRate*1000;
-  const level=rms(frame);
-  $("#meterFill").style.width=Math.min(100,level*350)+"%";
-  const thr=Math.max(MIN_LEVEL, noiseFloor+sensMargin);
-  $("#thr").style.left=Math.min(100,thr*350)+"%";
-  if(phase!=="listen" && phase!=="rec") return;         // don't capture while thinking/speaking
-
-  if(level>thr){                                          // --- voiced frame ---
-    silenceMs=0;
-    if(inSpeech){ utter.push(frame); speechMs+=frameMs; }
-    else{                                                 // onset debounce: need ONSET_MS of voice
-      speechRun+=frameMs; preroll.push(frame); trimPreroll(frameMs);
-      if(speechRun>=ONSET_MS){ inSpeech=true; utter=preroll.slice(); speechMs=speechRun; setPhase("rec","🎙️ बोलते रहिए… / Go on…"); }
-    }
-  } else {                                                // --- silent frame ---
-    speechRun=0;
-    if(inSpeech){ utter.push(frame); silenceMs+=frameMs; if(silenceMs>=END_SILENCE_MS){ inSpeech=false; endUtter(); } }
-    else{ preroll.push(frame); trimPreroll(frameMs); noiseFloor=0.92*noiseFloor+0.08*level; }
-  }
-}
-
-function endUtter(){
-  const dur=speechMs, sil=silenceMs; const frames=utter; utter=[]; preroll=[]; speechMs=0; silenceMs=0; speechRun=0;
-  if(dur<MIN_SPEECH_MS){ log("dropped short "+Math.round(dur)+"ms"); setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); return; }
-  let total=0; frames.forEach(f=>total+=f.length); let merged=new Float32Array(total); let o=0; frames.forEach(f=>{merged.set(f,o); o+=f.length;});
-  // trim most of the trailing silence (keep ~200ms) so STT isn't fed dead air
-  const trimN=Math.floor(Math.max(0,sil-200)/1000*ac.sampleRate);
-  if(trimN>0 && trimN<merged.length-1600) merged=merged.subarray(0, merged.length-trimN);
-  // peak-normalise to a strong level — a quiet mic is the #1 cause of garbled STT
-  let peak=0; for(let i=0;i<merged.length;i++){ const a=Math.abs(merged[i]); if(a>peak)peak=a; }
-  if(peak>0.015){ const g=Math.min(12, 0.92/peak); for(let i=0;i<merged.length;i++){ let v=merged[i]*g; merged[i]=v>1?1:v<-1?-1:v; } }
-  const int16=resample16k(merged, ac.sampleRate);
-  log("utterance "+Math.round(dur)+"ms peak="+peak.toFixed(3)+" -> "+int16.length+" samples");
-  const blob=wavBlob(int16);
-  if(lastCaptureUrl) URL.revokeObjectURL(lastCaptureUrl);
-  lastCaptureUrl=URL.createObjectURL(blob); $("#hearBtn").disabled=false;   // let the user hear exactly what STT got
-  setPhase("think","सोच रहे हैं… / Thinking…");
-  sendUtter(blob);
-}
-
-let missStreak=0;
-async function sendUtter(blob){
-  let caught=false;
-  try{
-    const b64=await blobToB64(blob);
-    const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang,stream:true});
-    if(j.error){ log("turn: "+j.error); }
-    else if(!j.transcript){ log("empty transcript"); }
-    else{ caught=true; missStreak=0;
-      addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
-      addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply}); if(j.timings) showTimings(j.timings);
-      setPhase("speak","🔊 बोल रहे हैं… / Speaking…"); await streamTTS(j.reply); }
-  }catch(e){ log("turn error: "+e.message); }
-  if(!caught){ missStreak++;
-    const tip = missStreak>=2 ? " (mic seems quiet — drag Mic sensitivity up before Start, or speak closer/louder)" : "";
-    if(running) setPhase("listen","❓ ठीक से सुनाई नहीं दिया — ज़रा साफ़ बोलिए / Didn't catch — please repeat"+tip);
-    return;
-  }
-  if(running) setPhase("listen","सुन रहे हैं — बोलिए / Listening…");
+function playChunk(ab){
+  const pcm=new Int16Array(ab); const f=new Float32Array(pcm.length);
+  for(let i=0;i<pcm.length;i++) f[i]=pcm[i]/32768;
+  const buf=ac.createBuffer(1,f.length,ttsRate); buf.getChannelData(0).set(f);
+  const s=ac.createBufferSource(); s.buffer=buf; s.connect(ac.destination);
+  nextTime=Math.max(nextTime, ac.currentTime+0.05); s.start(nextTime); nextTime+=buf.duration;
 }
 
 async function startCall(){
   if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
-  lang=$("#lang").value; history=[]; running=true; inSpeech=false; utter=[]; preroll=[]; speechRun=0; noiseFloor=0.01;
-  const ns=$("#nsChk").checked;   // noise reduction helps a noisy room; off if it distorts
-  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:ns,autoGainControl:true}}); }
-  catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it in the address bar and reload."; running=false; return; }
-  // Capture natively at 16 kHz (the browser's high-quality resampler) so STT
-  // gets clean audio — avoids the aliasing from decimating 48k->16k ourselves.
+  const lang=$("#lang").value;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
+  catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it and reload."; return; }
   const AC=window.AudioContext||window.webkitAudioContext;
   try{ ac=new AC({sampleRate:16000}); }catch(_){ ac=new AC(); }
-  await ac.resume();
+  await ac.resume(); log("mic @ "+ac.sampleRate+"Hz");
+  running=true; $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
+  $("#liveHint").textContent=lang+" · Silero VAD + Sarvam + Gemini + Cartesia";
+
+  const proto = location.protocol==="https:"?"wss:":"ws:";
+  ws=new WebSocket(proto+"//"+location.host+"/ws/call"); ws.binaryType="arraybuffer";
+  setPhase("think","Connecting…");
+  ws.onopen=()=>{ log("ws open"); ws.send(JSON.stringify({system_prompt:$("#prompt").value, first_message:$("#firstmsg").value.trim()||null, language:lang})); };
+  ws.onmessage=(ev)=>{
+    if(typeof ev.data!=="string"){ playChunk(ev.data); return; }
+    const m=JSON.parse(ev.data);
+    if(m.type==="audio_start"){ ttsRate=m.rate||24000; nextTime=ac.currentTime; setPhase("speak","🔊 बोल रहे हैं… / Speaking…"); }
+    else if(m.type==="audio_end"){ /* playback tail continues */ }
+    else if(m.type==="listening"){ setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); }
+    else if(m.type==="thinking"){ setPhase("think","सोच रहे हैं… / Thinking…"); }
+    else if(m.type==="transcript"){ addMsg(m.text,"user"); }
+    else if(m.type==="reply"){ addMsg(m.text,"bot"); }
+    else if(m.type==="error"){ addMsg("⚠️ "+m.text,"bot"); log("error: "+m.text); }
+  };
+  ws.onclose=()=>{ log("ws closed"); if(running) setPhase("","Disconnected"); };
+  ws.onerror=()=>log("ws error");
+
+  // stream mic continuously as 16k int16 PCM
   srcNode=ac.createMediaStreamSource(stream);
-  proc=ac.createScriptProcessor(1024,1,1); proc.onaudioprocess=onAudio;  // ~64ms frames @16k
-  const mute=ac.createGain(); mute.gain.value=0;                 // route through silent gain so the callback runs w/o feedback
+  proc=ac.createScriptProcessor(1024,1,1);
+  proc.onaudioprocess=(e)=>{
+    const f=e.inputBuffer.getChannelData(0);
+    let peak=0; for(let i=0;i<f.length;i++){ const a=Math.abs(f[i]); if(a>peak)peak=a; }
+    $("#meterFill").style.width=Math.min(100,peak*160)+"%";
+    if(!ws||ws.readyState!==1) return;
+    const i16=new Int16Array(f.length);
+    for(let i=0;i<f.length;i++){ let s=f[i]; s=s>1?1:s<-1?-1:s; i16[i]=s<0?s*32768:s*32767; }
+    ws.send(i16.buffer);
+  };
+  const mute=ac.createGain(); mute.gain.value=0;
   srcNode.connect(proc); proc.connect(mute); mute.connect(ac.destination);
-  log("mic @ "+ac.sampleRate+"Hz");
-  $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
-  $("#liveHint").textContent=lang+" · Sarvam + Gemini + Cartesia";
-  setPhase("think","Calibrating mic (stay quiet ~1s)…");
-  setTimeout(async ()=>{
-    log("noise floor "+noiseFloor.toFixed(3)+", threshold "+Math.max(MIN_LEVEL,noiseFloor+sensMargin).toFixed(3));
-    try{ const j=await api("/api/live/voice/open",{system_prompt:$("#prompt").value,first_message:$("#firstmsg").value.trim()||null,language:lang,stream:true});
-      history.push({role:"assistant",content:j.reply}); addMsg(j.reply,"bot"); setPhase("speak","🔊 बोल रहे हैं…"); await streamTTS(j.reply);
-    }catch(e){ log("open error: "+e.message); }
-    if(running) setPhase("listen","सुन रहे हैं — बोलिए / Listening…");
-  },1200);
 }
-function endCall(){ running=false; stopTTS();
+function endCall(){ running=false; try{ws&&ws.close()}catch(_){}
   try{ proc&&(proc.onaudioprocess=null); srcNode&&srcNode.disconnect(); proc&&proc.disconnect(); }catch(_){}
   try{ stream&&stream.getTracks().forEach(t=>t.stop()); }catch(_){}
   try{ ac&&ac.close(); }catch(_){}; ac=null;
-  setPhase("idle","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
-
+  setPhase("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
 $("#startBtn").onclick=startCall; $("#endBtn").onclick=endCall;
-$("#hearBtn").onclick=()=>{ if(lastCaptureUrl){ const a=new Audio(lastCaptureUrl); a.play(); } };
 </script>
 </body>
 </html>
