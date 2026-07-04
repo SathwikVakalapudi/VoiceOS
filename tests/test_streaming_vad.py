@@ -67,3 +67,34 @@ def test_two_separate_utterances():
     ep = StreamingEndpointer(FakeVAD(probs), min_silence_ms=300, min_speech_ms=150)
     out = ep.push(_pcm(len(probs)))
     assert len(out) == 2
+
+
+# ---- SmartTurnEndpointer (fake VAD + fake semantic predictor) ----
+import pytest
+from voiceos.dashboard.streaming_vad import SmartTurnEndpointer
+
+
+@pytest.mark.asyncio
+async def test_smart_turn_ends_immediately_when_complete():
+    probs = [0.0] * 2 + [0.9] * 10 + [0.0] * 8   # speech, then a short pause
+
+    async def predict(audio):
+        return 0.9                                # "you're done"
+
+    ep = SmartTurnEndpointer(FakeVAD(probs), predict, pause_ms=200,
+                             max_silence_ms=3000, min_speech_ms=150)
+    out = await ep.push(_pcm(len(probs)))
+    assert len(out) == 1                          # ended at the short pause
+
+
+@pytest.mark.asyncio
+async def test_smart_turn_waits_when_incomplete_then_forces_on_timeout():
+    probs = [0.0] * 2 + [0.9] * 10 + [0.0] * 60   # speech, then long silence
+
+    async def predict(audio):
+        return 0.05                               # "not done — keep listening"
+
+    ep = SmartTurnEndpointer(FakeVAD(probs), predict, pause_ms=200,
+                             max_silence_ms=800, min_speech_ms=150)
+    out = await ep.push(_pcm(len(probs)))
+    assert len(out) == 1                          # forced only at max_silence

@@ -195,6 +195,30 @@ def create_app(
             _llm_holder["llm"] = inst
         return _llm_holder["llm"]
 
+    _st_holder: dict = {}
+
+    def _shared_smart_turn():
+        """Load Smart Turn v3 once if the model + deps are present, else None
+        (graceful fallback to plain silence endpointing)."""
+        if "loaded" in _st_holder:
+            return _st_holder.get("st")
+        _st_holder["loaded"] = True
+        model = Path("models/smart-turn-v3.2-cpu.onnx")
+        if not model.exists():
+            logger.info("Smart Turn model not found; using silence endpointing")
+            return None
+        try:
+            from voiceos.dashboard.smart_turn import SmartTurn
+
+            st = SmartTurn(str(model))
+            st.load()
+            _st_holder["st"] = st
+            logger.info("Smart Turn v3 enabled (semantic end-of-turn)")
+            return st
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Smart Turn unavailable (%s); using silence endpointing", exc)
+            return None
+
     async def _shared_stt(language: str):
         if settings is None:
             raise HTTPException(503, "voice STT not configured (no settings)")
@@ -286,6 +310,10 @@ def create_app(
                 await stt.transcribe(_np.zeros(16000, dtype=_np.int16), 16000)
         except Exception:  # never block startup on a provider hiccup
             logger.info("prewarm incomplete (will warm on first request)")
+        # Smart Turn's transformers import is slow (~30s) — load it in the
+        # background so startup and early calls aren't blocked (they use Silero-
+        # only endpointing until it's ready).
+        asyncio.get_event_loop().run_in_executor(None, _shared_smart_turn)
 
     # ---- UI ---- (no-store so the browser never serves a stale tester page)
     _NOCACHE = {"Cache-Control": "no-store, max-age=0"}
@@ -311,12 +339,32 @@ def create_app(
         prompt = cfg.get("system_prompt", "")
         history: list[dict] = []
 
-        from voiceos.dashboard.streaming_vad import StreamingEndpointer
+        import asyncio as _asyncio
+
+        from voiceos.dashboard.streaming_vad import (
+            SmartTurnEndpointer,
+            StreamingEndpointer,
+        )
         from voiceos.vad.silero_vad import SileroVAD
 
         vad = SileroVAD(settings.vad)      # per-connection state
         await vad.load()
-        endpointer = StreamingEndpointer(vad, min_silence_ms=550)
+        loop = _asyncio.get_event_loop()
+        smart_turn = await loop.run_in_executor(None, _shared_smart_turn)
+        if smart_turn is not None:
+            async def _predict(audio):
+                return await loop.run_in_executor(None, smart_turn.complete_prob, audio)
+
+            endpointer = SmartTurnEndpointer(vad, _predict)
+
+            async def next_utts(pcm):
+                return await endpointer.push(pcm)
+        else:
+            endpointer = StreamingEndpointer(vad, min_silence_ms=550)
+
+            async def next_utts(pcm):
+                return endpointer.push(pcm)
+
         stt = await _shared_stt(lang)
         speaking = False
 
@@ -345,7 +393,10 @@ def create_app(
             await ws.send_json({"type": "reply", "text": reply})
             await say(reply)
         except Exception as exc:
-            await ws.send_json({"type": "error", "text": str(exc)})
+            try:
+                await ws.send_json({"type": "error", "text": str(exc)})
+            except Exception:
+                return  # client already gone
 
         try:
             while True:
@@ -355,7 +406,7 @@ def create_app(
                 data = msg.get("bytes")
                 if data is None or speaking:      # ignore mic while the agent talks
                     continue
-                for utt in endpointer.push(np.frombuffer(data, dtype="<i2")):
+                for utt in await next_utts(np.frombuffer(data, dtype="<i2")):
                     await ws.send_json({"type": "thinking"})
                     try:
                         res = await _retry(lambda: stt.transcribe(utt, 16000))
