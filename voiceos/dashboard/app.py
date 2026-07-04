@@ -226,10 +226,25 @@ def create_app(
             _llm_holder[key] = inst
         return _llm_holder[key]
 
+    async def _synth_chunks(tts, text: str) -> list:
+        """Collect TTS chunks, retrying if it fails before emitting any audio
+        (Cartesia occasionally returns a transient 4xx/5xx that clears)."""
+        last: Exception | None = None
+        for _ in range(3):
+            try:
+                out = []
+                async for c in tts.synthesize(text):
+                    out.append(c)
+                return out
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                await asyncio.sleep(0.4)
+        raise last  # type: ignore[misc]
+
     async def _synthesize(text: str, language: str) -> str:
         tts = await _shared_tts(language)
         clean = (text or "").replace("end_call_tool", "").strip()
-        chunks = [c async for c in tts.synthesize(clean)] if clean else []
+        chunks = await _synth_chunks(tts, clean) if clean else []
         audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
         return _wav_b64(audio, tts.sample_rate)
 
@@ -312,8 +327,19 @@ def create_app(
         async def gen():
             if not clean:
                 return
-            async for chunk in tts.synthesize(clean):
-                yield np.ascontiguousarray(chunk, dtype="<i2").tobytes()
+            # Retry only while nothing has been streamed yet (a mid-stream drop
+            # can't be restarted without repeating audio).
+            for attempt in range(3):
+                emitted = False
+                try:
+                    async for chunk in tts.synthesize(clean):
+                        emitted = True
+                        yield np.ascontiguousarray(chunk, dtype="<i2").tobytes()
+                    return
+                except Exception:  # noqa: BLE001
+                    if emitted or attempt == 2:
+                        return
+                    await asyncio.sleep(0.4)
 
         return StreamingResponse(
             gen(),
