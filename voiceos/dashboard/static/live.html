@@ -66,6 +66,7 @@
     <textarea id="prompt" rows="9" placeholder="You are a courteous, neutral telephone survey caller…"></textarea>
     <label>Mic sensitivity <span id="sensVal" class="hint"></span></label>
     <input type="range" id="sens" min="1" max="10" value="5"/>
+    <label style="margin-top:10px"><input type="checkbox" id="nsChk" checked style="width:auto"/> Noise reduction (turn off if it distorts your voice)</label>
     <div class="bar" style="margin-top:14px">
       <button class="call" id="startBtn">📞  Start call</button>
       <span class="hint">Just talk — no buttons during the call. Watch the meter move when you speak.</span>
@@ -78,6 +79,7 @@
     <div class="chat" id="chat"></div>
     <div class="bar" style="margin-top:14px">
       <button class="end" id="endBtn">■ End call</button>
+      <button class="ghost" id="hearBtn" disabled>🔉 Hear last capture</button>
       <span class="hint" id="liveHint"></span>
     </div>
   </div>
@@ -86,7 +88,7 @@
 <script>
 const $=s=>document.querySelector(s);
 let lang="hi-IN", running=false, history=[], phase="idle";
-let stream=null, ac=null, proc=null, srcNode=null;
+let stream=null, ac=null, proc=null, srcNode=null, lastCaptureUrl=null;
 // VAD state
 let inSpeech=false, utter=[], preroll=[], speechMs=0, silenceMs=0, speechRun=0, noiseFloor=0.01, sensMargin=0.02;
 // tuning
@@ -177,32 +179,50 @@ function onAudio(e){
 }
 
 function endUtter(){
-  const dur=speechMs; const frames=utter; utter=[]; preroll=[]; speechMs=0; silenceMs=0;
+  const dur=speechMs, sil=silenceMs; const frames=utter; utter=[]; preroll=[]; speechMs=0; silenceMs=0; speechRun=0;
   if(dur<MIN_SPEECH_MS){ log("dropped short "+Math.round(dur)+"ms"); setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); return; }
-  let total=0; frames.forEach(f=>total+=f.length); const merged=new Float32Array(total); let o=0; frames.forEach(f=>{merged.set(f,o); o+=f.length;});
+  let total=0; frames.forEach(f=>total+=f.length); let merged=new Float32Array(total); let o=0; frames.forEach(f=>{merged.set(f,o); o+=f.length;});
+  // trim most of the trailing silence (keep ~200ms) so STT isn't fed dead air
+  const trimN=Math.floor(Math.max(0,sil-200)/1000*ac.sampleRate);
+  if(trimN>0 && trimN<merged.length-1600) merged=merged.subarray(0, merged.length-trimN);
+  // peak-normalise to a strong level — a quiet mic is the #1 cause of garbled STT
+  let peak=0; for(let i=0;i<merged.length;i++){ const a=Math.abs(merged[i]); if(a>peak)peak=a; }
+  if(peak>0.015){ const g=Math.min(12, 0.92/peak); for(let i=0;i<merged.length;i++){ let v=merged[i]*g; merged[i]=v>1?1:v<-1?-1:v; } }
   const int16=resample16k(merged, ac.sampleRate);
-  log("utterance "+Math.round(dur)+"ms -> "+int16.length+" samples @16k");
+  log("utterance "+Math.round(dur)+"ms peak="+peak.toFixed(3)+" -> "+int16.length+" samples");
+  const blob=wavBlob(int16);
+  if(lastCaptureUrl) URL.revokeObjectURL(lastCaptureUrl);
+  lastCaptureUrl=URL.createObjectURL(blob); $("#hearBtn").disabled=false;   // let the user hear exactly what STT got
   setPhase("think","सोच रहे हैं… / Thinking…");
-  sendUtter(wavBlob(int16));
+  sendUtter(blob);
 }
 
+let missStreak=0;
 async function sendUtter(blob){
+  let caught=false;
   try{
     const b64=await blobToB64(blob);
     const j=await api("/api/live/voice/turn",{audio_b64:b64,system_prompt:$("#prompt").value,history,language:lang,stream:true});
     if(j.error){ log("turn: "+j.error); }
     else if(!j.transcript){ log("empty transcript"); }
-    else{ addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
+    else{ caught=true; missStreak=0;
+      addMsg(j.transcript,"user"); history.push({role:"user",content:j.transcript});
       addMsg(j.reply,"bot"); history.push({role:"assistant",content:j.reply}); if(j.timings) showTimings(j.timings);
       setPhase("speak","🔊 बोल रहे हैं… / Speaking…"); await streamTTS(j.reply); }
   }catch(e){ log("turn error: "+e.message); }
+  if(!caught){ missStreak++;
+    const tip = missStreak>=2 ? " (mic seems quiet — drag Mic sensitivity up before Start, or speak closer/louder)" : "";
+    if(running) setPhase("listen","❓ ठीक से सुनाई नहीं दिया — ज़रा साफ़ बोलिए / Didn't catch — please repeat"+tip);
+    return;
+  }
   if(running) setPhase("listen","सुन रहे हैं — बोलिए / Listening…");
 }
 
 async function startCall(){
   if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
   lang=$("#lang").value; history=[]; running=true; inSpeech=false; utter=[]; preroll=[]; speechRun=0; noiseFloor=0.01;
-  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
+  const ns=$("#nsChk").checked;   // noise reduction helps a noisy room; off if it distorts
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:ns,autoGainControl:true}}); }
   catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it in the address bar and reload."; running=false; return; }
   // Capture natively at 16 kHz (the browser's high-quality resampler) so STT
   // gets clean audio — avoids the aliasing from decimating 48k->16k ourselves.
@@ -232,6 +252,7 @@ function endCall(){ running=false; stopTTS();
   setPhase("idle","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
 
 $("#startBtn").onclick=startCall; $("#endBtn").onclick=endCall;
+$("#hearBtn").onclick=()=>{ if(lastCaptureUrl){ const a=new Audio(lastCaptureUrl); a.play(); } };
 </script>
 </body>
 </html>
