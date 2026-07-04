@@ -131,7 +131,7 @@ class LLMSettings(BaseModel):
 class TTSSettings(BaseModel):
     """TTS provider selection plus per-provider settings."""
 
-    provider: str = "svara"            # "svara" | "edge" | "cartesia"
+    provider: str = "svara"            # "svara" | "edge" | "cartesia" | "piper"
     # Ordered backup providers tried when the primary fails before emitting
     # audio, e.g. ["edge"] so a self-hosted TTS outage falls back to the free
     # cloud voice. All providers must share `sample_rate`.
@@ -154,6 +154,13 @@ class TTSSettings(BaseModel):
     cartesia_voice_id: str = "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"  # Skylar
     cartesia_language: str = "en"
     cartesia_timeout_s: float = 30.0
+
+    # piper: fully local/offline neural TTS (CPU). Voice from huggingface.co/
+    # rhasspy/piper-voices; sample_rate must match the voice's .onnx.json.
+    piper_binary: str = "piper"
+    piper_model: str = ""              # path to the voice .onnx file
+    piper_sample_rate: int = 22050
+    piper_speaker: int | None = None   # multi-speaker voices only
 
 
 class ConversationSettings(BaseModel):

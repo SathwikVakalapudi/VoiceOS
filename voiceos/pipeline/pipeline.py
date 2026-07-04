@@ -107,6 +107,10 @@ def _build_tts(provider: str, settings: Settings) -> BaseTTS:
         from voiceos.tts.cartesia import CartesiaTTS
 
         return CartesiaTTS(settings.tts)
+    if provider == "piper":
+        from voiceos.tts.piper import PiperTTS
+
+        return PiperTTS(settings.tts)
     return SvaraTTS(settings.tts)
 
 
