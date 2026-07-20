@@ -25,8 +25,11 @@ class PlaybackWorker:
         playback_queue: asyncio.Queue,
         event_bus: EventBus,
         state: StateMachine,
+        echo_gate=None,
     ) -> None:
         self._speaker = speaker
+        # Fed every frame we play, so the detector can tell echo from a caller.
+        self._echo_gate = echo_gate
         self._queue = playback_queue
         self._bus = event_bus
         self._state = state
@@ -70,6 +73,8 @@ class PlaybackWorker:
                     )
                     self._sentences_spoken = 0
                     self._current_turn_id = None
+                    if self._echo_gate is not None:
+                        self._echo_gate.reset()   # nothing playing, nothing to match
                     # After a barge-in the user is already speaking (LISTENING);
                     # a stale end-of-turn must not yank the state back to IDLE.
                     if self._state.state is not PipelineState.LISTENING:
@@ -80,6 +85,8 @@ class PlaybackWorker:
                 if not self._playing:
                     self._playing = True
                     await self._bus.emit(EventType.PLAYBACK_STARTED, {})
+                if self._echo_gate is not None:
+                    self._echo_gate.push_reference(frame.data, frame.sample_rate)
                 await self._speaker.play(frame.data)
             except Exception:
                 logger.exception("playback failed")

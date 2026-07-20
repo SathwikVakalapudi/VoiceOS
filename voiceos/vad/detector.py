@@ -48,6 +48,7 @@ class SpeechDetector:
         partial_transcriber: StreamingTranscriber | None = None,
         endpoint_predictor: EndpointPredictor | None = None,
         turn_predictor: Callable[[np.ndarray], Awaitable[float]] | None = None,
+        echo_gate=None,
     ) -> None:
         self._vad = vad
         self._settings = settings
@@ -60,6 +61,8 @@ class SpeechDetector:
         self._endpoint_predictor = endpoint_predictor
         # Smart Turn: async callable(int16 audio) -> "turn complete" probability.
         self._turn_predictor = turn_predictor
+        # Suppresses barge-in while the mic is hearing the assistant.
+        self._echo_gate = echo_gate
         self._turn_task: asyncio.Task | None = None
         self._turn_checked = False
         pre_roll_frames = max(1, int(settings.pre_roll_ms / frame_ms))
@@ -336,8 +339,17 @@ class SpeechDetector:
 
     async def _watch_for_barge_in(self, frame: AudioFrame) -> None:
         """While the assistant speaks, listen for the user talking over it."""
-        prob = self._vad.process(int16_to_float32(frame.data), frame.sample_rate)
+        signal = int16_to_float32(frame.data)
+        prob = self._vad.process(signal, frame.sample_rate)
         self._recorder.push_idle(frame)  # keep the start of their sentence
+
+        # The assistant's own voice re-entering the mic looks exactly like
+        # speech to the VAD. Compare against what was just played first: a
+        # strong correlation means this is echo, not the user.
+        if self._echo_gate is not None and self._echo_gate.is_echo(signal):
+            self._barge_ms = 0.0
+            return
+
         if prob >= self._settings.barge_in_threshold:
             self._barge_ms += frame.duration_ms
         else:

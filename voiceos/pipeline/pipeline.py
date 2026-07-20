@@ -208,6 +208,18 @@ class VoicePipeline:
                 loop = asyncio.get_running_loop()
                 return await loop.run_in_executor(None, st.complete_prob, audio)
 
+        # Echo gate: shared between playback (which supplies the reference)
+        # and the detector (which consults it before triggering barge-in).
+        self.echo_gate = None
+        if settings.vad.echo_gate:
+            from voiceos.vad.echo import EchoGate
+
+            self.echo_gate = EchoGate(
+                sample_rate=settings.audio.input_sample_rate,
+                window_ms=settings.vad.echo_window_ms,
+                threshold=settings.vad.echo_gate_threshold,
+            )
+
         frame_ms = settings.audio.frame_size / settings.audio.input_sample_rate * 1000
         self.detector = SpeechDetector(
             self.vad, settings.vad, self.audio_queue, self.utterance_queue,
@@ -216,6 +228,7 @@ class VoicePipeline:
             partial_transcriber=self.partial_transcriber,
             endpoint_predictor=self.endpoint_predictor,
             turn_predictor=turn_predictor,
+            echo_gate=self.echo_gate,
         )
         self.stt_worker = STTWorker(
             self.stt, self.utterance_queue, self.transcript_queue,
@@ -233,6 +246,7 @@ class VoicePipeline:
         )
         self.playback_worker = PlaybackWorker(
             self.speaker, self.playback_queue, self.event_bus, self.state,
+            echo_gate=self.echo_gate,
         )
         self.backchannel = (
             BackchannelWorker(

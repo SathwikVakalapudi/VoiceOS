@@ -82,6 +82,13 @@ class VADSettings(BaseModel):
     barge_in: bool = True
     barge_in_threshold: float = 0.7    # stricter than normal to resist echo/noise
     barge_in_speech_ms: int = 250      # sustained speech required to trigger
+    # Echo gate: cross-correlate the mic against what was just played. Echo is
+    # the same signal delayed, so it correlates strongly; another voice does
+    # not. Lets barge-in stay on over loudspeakers instead of needing
+    # headphones, without an adaptive filter.
+    echo_gate: bool = False
+    echo_gate_threshold: float = 0.35  # peak normalised correlation to call it echo
+    echo_window_ms: int = 500          # must span the speaker->room->mic delay
 
     @model_validator(mode="after")
     def _default_neg_threshold(self) -> "VADSettings":
