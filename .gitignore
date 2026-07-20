@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+!.env.local.example
 .pytest_cache/
 *.wav
 *.mp3
@@ -20,3 +23,6 @@ sarvam_stream.txt
 
 # Extracted survey results (call data / possible PII)
 results/
+
+# Captured utterances from voiceos_chat.py — voice recordings, keep local
+debug_audio/
