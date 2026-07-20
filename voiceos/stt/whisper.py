@@ -53,6 +53,9 @@ class FasterWhisperSTT(BaseSTT):
             audio,
             language=self._settings.language,
             beam_size=self._settings.beam_size,
+            condition_on_previous_text=self._settings.condition_on_previous_text,
+            no_speech_threshold=self._settings.no_speech_threshold,
+            compression_ratio_threshold=self._settings.compression_ratio_threshold,
         )
         text = " ".join(segment.text.strip() for segment in segments).strip()
         return TranscriptionResult(

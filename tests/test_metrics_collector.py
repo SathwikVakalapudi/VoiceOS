@@ -47,3 +47,25 @@ async def test_latency_percentiles_present():
     assert snap["latency_s"]["stt_s"]["count"] == 1
     assert snap["latency_s"]["stt_s"]["p50"] == 0.3
     assert snap["latency_s"]["llm_total_s"]["max"] == 0.9
+
+
+async def test_dropped_frames_are_reported():
+    # Backpressure drops are silent audio loss — indistinguishable from
+    # silence downstream. Counting them without ever reading the count is
+    # the same as not counting them, so they belong in the snapshot.
+    import numpy as np
+
+    from voiceos.audio.audio_queue import AudioQueue, make_frame
+
+    queue = AudioQueue(maxsize=2)
+    for _ in range(5):
+        queue.put_drop_oldest(make_frame(np.zeros(512, dtype=np.int16), 16000))
+
+    collector = MetricsCollector(EventBus(), queue)
+
+    assert queue.dropped == 3
+    assert collector.snapshot()["frames_dropped"] == 3
+
+
+async def test_dropped_frames_default_to_zero_without_a_queue():
+    assert MetricsCollector(EventBus()).snapshot()["frames_dropped"] == 0

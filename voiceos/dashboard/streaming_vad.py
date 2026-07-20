@@ -49,6 +49,15 @@ class StreamingEndpointer:
         """True while the user is actively speaking (used for barge-in)."""
         return self._in_speech
 
+    def snapshot(self) -> np.ndarray:
+        """The utterance-so-far, without consuming it — for partial transcripts.
+
+        Mirrors `UtteranceRecorder.snapshot()`. Empty while idle.
+        """
+        if not self._speech:
+            return np.zeros(0, dtype=np.int16)
+        return np.concatenate(self._speech)
+
     def reset(self) -> None:
         try:
             self._vad.reset()
@@ -138,6 +147,12 @@ class SmartTurnEndpointer:
     @property
     def in_speech(self) -> bool:
         return self._in_speech
+
+    def snapshot(self) -> np.ndarray:
+        """The utterance-so-far, without consuming it — for partial transcripts."""
+        if not self._audio:
+            return np.zeros(0, dtype=np.int16)
+        return np.concatenate(self._audio)
 
     def _reset_utterance(self) -> None:
         self._in_speech = False

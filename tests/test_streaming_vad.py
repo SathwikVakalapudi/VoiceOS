@@ -98,3 +98,45 @@ async def test_smart_turn_waits_when_incomplete_then_forces_on_timeout():
                              max_silence_ms=800, min_speech_ms=150)
     out = await ep.push(_pcm(len(probs)))
     assert len(out) == 1                          # forced only at max_silence
+
+
+def test_snapshot_exposes_the_utterance_so_far_without_consuming_it():
+    # Partial transcripts need to read the in-progress buffer while the user is
+    # still talking; snapshot() must not disturb segmentation.
+    probs = [0.0] * 2 + [0.9] * 10
+    ep = StreamingEndpointer(FakeVAD(probs), min_speech_ms=100, min_silence_ms=200)
+
+    assert ep.snapshot().size == 0                # nothing latched yet
+
+    out = ep.push(_pcm(len(probs)))
+    assert out == []                              # still speaking
+    first = ep.snapshot()
+    assert first.size > 0
+    assert ep.snapshot().size == first.size       # non-consuming
+
+
+def test_snapshot_grows_while_speech_continues_and_clears_after_commit():
+    probs = [0.9] * 6 + [0.0] * 12                # speech, then trailing silence
+    ep = StreamingEndpointer(FakeVAD(probs), min_speech_ms=100, min_silence_ms=200)
+
+    ep.push(_pcm(3))
+    early = ep.snapshot().size
+    ep.push(_pcm(3))
+    assert ep.snapshot().size > early             # grew with more speech
+
+    assert len(ep.push(_pcm(12))) == 1            # committed
+    assert ep.snapshot().size == 0                # cleared for the next turn
+
+
+@pytest.mark.asyncio
+async def test_smart_turn_endpointer_exposes_the_same_snapshot_api():
+    # app.py treats the two endpointers interchangeably, so their APIs must match.
+    probs = [0.9] * 8
+
+    async def predict(audio):
+        return 0.0
+
+    ep = SmartTurnEndpointer(FakeVAD(probs), predict, min_speech_ms=100)
+    assert ep.snapshot().size == 0
+    await ep.push(_pcm(len(probs)))
+    assert ep.snapshot().size > 0

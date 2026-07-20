@@ -9,7 +9,12 @@ is the aggregation the dashboard reads — the analytics module the
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from voiceos.pipeline.events import Event, EventBus, EventType
+
+if TYPE_CHECKING:
+    from voiceos.audio.audio_queue import AudioQueue
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -30,7 +35,11 @@ class MetricsCollector:
         "llm_total_s": "latency_total_s",
     }
 
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(self, event_bus: EventBus, audio_queue: "AudioQueue | None" = None) -> None:
+        # Optional: lets the snapshot report backpressure drops. Silent audio
+        # loss is indistinguishable from silence, so counting it without ever
+        # reading the count is the same as not counting it.
+        self._audio_queue = audio_queue
         self._samples: dict[str, list[float]] = {k: [] for k in self._SAMPLES}
         self._turns = 0
         self._barge_ins = 0
@@ -79,5 +88,6 @@ class MetricsCollector:
             "barge_ins": self._barge_ins,
             "tool_calls": self._tool_calls,
             "errors": dict(self._errors),
+            "frames_dropped": self._audio_queue.dropped if self._audio_queue else 0,
             "latency_s": latency,
         }

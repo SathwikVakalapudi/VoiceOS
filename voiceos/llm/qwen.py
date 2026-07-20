@@ -17,6 +17,7 @@ import httpx
 
 from voiceos.config.settings import LLMSettings
 from voiceos.llm.base import BaseLLM, Message
+from voiceos.utils.http import RETRYABLE_STATUS, error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,16 @@ class QwenLLM(BaseLLM):
         for attempt in range(3):
             try:
                 response = await self._client.get("/models")
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    # Report what the provider said, not just the status code —
+                    # "API key expired" is actionable, "400 Bad Request" is not.
+                    logger.warning(
+                        "LLM endpoint %s rejected the health check: %s — %s",
+                        self._settings.base_url,
+                        response.status_code,
+                        await error_detail(response),
+                    )
+                    return
                 logger.info("LLM endpoint reachable at %s", self._settings.base_url)
                 return
             except httpx.HTTPError as exc:
@@ -46,7 +56,7 @@ class QwenLLM(BaseLLM):
                     await asyncio.sleep(1.0)
                     continue
                 logger.warning(
-                    "LLM endpoint %s health check failed (%s: %s) — "
+                    "LLM endpoint %s unreachable (%s: %s) — "
                     "generation may still work; otherwise check the server/key",
                     self._settings.base_url,
                     type(exc).__name__,
@@ -71,32 +81,47 @@ class QwenLLM(BaseLLM):
         # ends the turn gracefully with the partial reply instead of erroring.
         for attempt in range(3):
             emitted = False
+            backoff = None
             try:
                 async with self._client.stream(
                     "POST", "/chat/completions", json=payload
                 ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[len("data:") :].strip()
-                        if data == "[DONE]":
-                            return
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            logger.warning("unparseable stream chunk: %.120s", data)
-                            continue
-                        choices = chunk.get("choices") or []
-                        if not choices:
-                            continue
-                        content = (choices[0].get("delta") or {}).get("content")
-                        if content:
-                            emitted = True
-                            yield content
-                return
+                    if response.status_code >= 400:
+                        detail = await error_detail(response)
+                        if response.status_code in RETRYABLE_STATUS and attempt < 2:
+                            logger.warning(
+                                "LLM %s from %s (%s); retrying",
+                                response.status_code, self._settings.model, detail,
+                            )
+                            backoff = 0.4 * 2**attempt
+                        else:
+                            logger.error(
+                                "LLM request failed: %s — %s",
+                                response.status_code, detail,
+                            )
+                            response.raise_for_status()
+                    if backoff is None:
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[len("data:") :].strip()
+                            if data == "[DONE]":
+                                return
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                logger.warning("unparseable stream chunk: %.120s", data)
+                                continue
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            content = (choices[0].get("delta") or {}).get("content")
+                            if content:
+                                emitted = True
+                                yield content
+                        return
             except httpx.HTTPStatusError:
-                raise  # auth/quota/model errors won't improve on retry
+                raise  # non-retryable: bad key, unknown model, malformed request
             except httpx.HTTPError as exc:
                 if emitted:
                     logger.warning(
@@ -114,6 +139,9 @@ class QwenLLM(BaseLLM):
                     await asyncio.sleep(0.4 * 2**attempt)  # 0.4, 0.8s
                     continue
                 raise
+
+            # A retryable status (429/5xx) was seen — back off and try again.
+            await asyncio.sleep(backoff)
 
     async def complete(self, messages, tools=None):
         """Single non-streaming completion for the tool-calling loop. Returns
@@ -134,7 +162,12 @@ class QwenLLM(BaseLLM):
             payload["reasoning_effort"] = self._settings.reasoning_effort
 
         response = await self._client.post("/chat/completions", json=payload)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            logger.error(
+                "LLM request failed: %s — %s",
+                response.status_code, await error_detail(response),
+            )
+            response.raise_for_status()
         data = response.json()
         choices = data.get("choices") or [{}]
         return choices[0].get("message") or {"role": "assistant", "content": ""}

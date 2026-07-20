@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,8 +28,13 @@ class AudioSettings(BaseModel):
 
 
 class VADSettings(BaseModel):
-    threshold: float = 0.5             # speech probability above this = speaking
-    min_speech_ms: int = 250           # shorter bursts are discarded as noise
+    threshold: float = 0.5             # prob above this STARTS speech
+    # Hysteresis exit bar: once speech is latched, stay in speech while prob is
+    # above this lower value, so a mid-word dip below `threshold` doesn't read as
+    # silence (flicker, early cutoff, dropped short answers). None -> threshold-0.15,
+    # Silero's own convention (and what dashboard/streaming_vad.py already uses).
+    neg_threshold: float | None = None
+    min_speech_ms: int = 150           # shorter bursts are discarded as noise
     min_silence_ms: int = 700          # this much trailing silence ends the utterance
     pre_roll_ms: int = 300             # audio kept from just before speech started
     max_utterance_s: float = 30.0      # hard cap; force-close runaway utterances
@@ -60,12 +65,31 @@ class VADSettings(BaseModel):
     predicted_silence_ms: int = 250    # trailing silence needed after a "done" guess
     min_partial_chars: int = 12        # ignore partials shorter than this
 
+    # Smart Turn v3: a local semantic end-of-turn model (raw waveform -> "turn
+    # complete" probability, ~12 ms on CPU). On a short pause it decides whether
+    # the user actually finished, so the turn closes fast when done and keeps
+    # waiting when they paused mid-sentence — without the repeated STT calls
+    # predictive endpointing needs. A positive prediction closes after the short
+    # `predicted_silence_ms`. Off by default (needs the model file + transformers).
+    smart_turn: bool = False
+    smart_turn_model: str = "models/smart-turn-v3.2-cpu.onnx"
+    smart_turn_pause_ms: int = 300     # pause that triggers a completion check
+    smart_turn_threshold: float = 0.5  # prob >= this -> treat the turn as complete
+
     # Barge-in: interrupt the assistant by talking over it.
     # Works best with headphones — on loudspeakers the mic hears the
     # assistant's own voice and may self-interrupt.
     barge_in: bool = True
     barge_in_threshold: float = 0.7    # stricter than normal to resist echo/noise
     barge_in_speech_ms: int = 250      # sustained speech required to trigger
+
+    @model_validator(mode="after")
+    def _default_neg_threshold(self) -> "VADSettings":
+        # Fill the hysteresis exit bar relative to the (possibly overridden)
+        # start threshold, unless the caller set it explicitly.
+        if self.neg_threshold is None:
+            self.neg_threshold = round(max(0.0, self.threshold - 0.15), 3)
+        return self
 
 
 class STTSettings(BaseModel):
@@ -81,12 +105,26 @@ class STTSettings(BaseModel):
     compute_type: str = "default"      # int8 | float16 | default
     language: str | None = "en"        # None -> autodetect per utterance
     beam_size: int = 5
+    # Hallucination guards. Whisper was trained on subtitle-heavy web audio, so
+    # on near-silence it emits training artifacts ("Thank you for watching") or
+    # loops the previous phrase. Re-feeding prior text is what sustains the
+    # loop, hence the False default — it costs a little cross-segment coherence,
+    # which single-utterance turns don't need anyway.
+    condition_on_previous_text: bool = False
+    no_speech_threshold: float = 0.6        # drop segments the model calls silence
+    compression_ratio_threshold: float = 2.4  # reject degenerate repetition
 
     # sarvam: hosted Saaras/Saarika API (great for Indian accents/languages)
     sarvam_api_key: str = ""
     sarvam_model: str = "saarika:v2.5"  # transcription (saaras = translation!)
     sarvam_language: str | None = None  # BCP-47 like "en-IN"; None -> autodetect
     sarvam_timeout_s: float = 12.0     # a turn stalled longer than this is dead anyway
+    # Streaming STT over WebSocket. Audio uploads while the user is still
+    # talking, so when the turn ends only the tail is left to finalise —
+    # removing most of the batch round-trip from perceived latency.
+    sarvam_streaming: bool = False
+    sarvam_streaming_model: str = "saaras:v3"   # or saarika:v2.5 (legacy)
+    sarvam_streaming_sample_rate: int = 16000
 
 
 class LLMEndpoint(BaseModel):

@@ -20,6 +20,7 @@ import numpy as np
 
 from voiceos.config.settings import STTSettings
 from voiceos.stt.base import BaseSTT, TranscriptionResult
+from voiceos.utils.http import RETRYABLE_STATUS, error_detail
 from voiceos.utils.audio import float32_to_int16
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,19 @@ class SarvamSTT(BaseSTT):
                     files={"file": ("utterance.wav", wav, "audio/wav")},
                     data=data,
                 )
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    detail = await error_detail(response)
+                    if response.status_code in RETRYABLE_STATUS and attempt < 3:
+                        logger.warning(
+                            "Sarvam STT %s (%s); retrying",
+                            response.status_code, detail,
+                        )
+                        await asyncio.sleep(0.3 * 2**attempt)
+                        continue
+                    logger.error(
+                        "Sarvam STT failed: %s — %s", response.status_code, detail
+                    )
+                    response.raise_for_status()
                 payload = response.json()
                 return TranscriptionResult(
                     text=(payload.get("transcript") or "").strip(),
@@ -80,7 +93,7 @@ class SarvamSTT(BaseSTT):
                     duration_s=len(audio) / sample_rate,
                 )
             except httpx.HTTPStatusError:
-                raise  # auth/quota errors won't improve on retry
+                raise  # non-retryable: bad key, quota exhausted, bad model
             except httpx.HTTPError as exc:
                 last_exc = exc
                 logger.warning(

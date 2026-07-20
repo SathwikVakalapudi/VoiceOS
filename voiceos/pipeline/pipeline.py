@@ -139,13 +139,10 @@ class VoicePipeline:
         self.event_bus = event_bus or EventBus()
         self.state = StateMachine()
         self.metrics = LatencyMonitor(self.event_bus)
-        # Aggregated metrics for the optional dashboard (started in start()).
+        # Aggregated metrics for the optional dashboard. Built after the
+        # queues below, since it reports the audio queue's drop count.
         self.metrics_collector = None
         self._metrics_server = None
-        if settings.monitoring.enabled:
-            from voiceos.monitoring.collector import MetricsCollector
-
-            self.metrics_collector = MetricsCollector(self.event_bus)
         self.interrupts = InterruptController()
 
         # Pluggable stages — pass alternatives in, or rely on defaults.
@@ -177,6 +174,11 @@ class VoicePipeline:
         self.tts_queue: asyncio.Queue = asyncio.Queue()
         self.playback_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
 
+        if settings.monitoring.enabled:
+            from voiceos.monitoring.collector import MetricsCollector
+
+            self.metrics_collector = MetricsCollector(self.event_bus, self.audio_queue)
+
         # Predictive endpointing needs partial transcripts. Give it a
         # dedicated STT instance so rolling partials never run on the same
         # model as the STT worker's final transcription.
@@ -191,6 +193,21 @@ class VoicePipeline:
                 min_chars=settings.vad.min_partial_chars
             )
 
+        # Smart Turn v3 semantic endpointing. The model loads in the background
+        # during start() (its transformers import is slow); until it is ready the
+        # predictor returns 0.0, so the detector simply falls back to the silence
+        # timer. The closure reads self.smart_turn at call time.
+        self.smart_turn = None
+        self._smart_turn_task: asyncio.Task | None = None
+        turn_predictor = None
+        if settings.vad.smart_turn:
+            async def turn_predictor(audio):
+                st = self.smart_turn
+                if st is None:
+                    return 0.0
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, st.complete_prob, audio)
+
         frame_ms = settings.audio.frame_size / settings.audio.input_sample_rate * 1000
         self.detector = SpeechDetector(
             self.vad, settings.vad, self.audio_queue, self.utterance_queue,
@@ -198,6 +215,7 @@ class VoicePipeline:
             on_barge_in=self._handle_barge_in,
             partial_transcriber=self.partial_transcriber,
             endpoint_predictor=self.endpoint_predictor,
+            turn_predictor=turn_predictor,
         )
         self.stt_worker = STTWorker(
             self.stt, self.utterance_queue, self.transcript_queue,
@@ -240,6 +258,28 @@ class VoicePipeline:
             event.data["turn_id"], event.data.get("sentences_spoken")
         )
 
+    async def _load_smart_turn(self) -> None:
+        """Load the Smart Turn v3 model off the event loop; on any problem, leave
+        self.smart_turn None so endpointing quietly stays on the silence timer."""
+        from pathlib import Path
+
+        model = Path(self.settings.vad.smart_turn_model)
+        if not model.exists():
+            logger.warning(
+                "smart_turn enabled but model missing at %s; using silence timer", model
+            )
+            return
+        try:
+            from voiceos.dashboard.smart_turn import SmartTurn
+
+            loop = asyncio.get_running_loop()
+            st = SmartTurn(str(model), threshold=self.settings.vad.smart_turn_threshold)
+            await loop.run_in_executor(None, st.load)
+            self.smart_turn = st
+            logger.info("Smart Turn v3 endpointing enabled (semantic end-of-turn)")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Smart Turn unavailable (%s); using silence timer", exc)
+
     async def _handle_barge_in(self) -> None:
         """Kill everything the assistant was about to say, right now."""
         # Record only the sentences fully played before the interrupt, so
@@ -268,6 +308,10 @@ class VoicePipeline:
         self.speaker.open(self.tts.sample_rate)
         loop = asyncio.get_running_loop()
         self.microphone.start(loop, self.audio_queue)
+
+        if self.settings.vad.smart_turn:
+            # Background load: the pipeline runs on the silence timer until ready.
+            self._smart_turn_task = asyncio.create_task(self._load_smart_turn())
 
         if self.backchannel is not None:
             await self.backchannel.load()  # pre-render fillers on the TTS voice

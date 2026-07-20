@@ -20,6 +20,7 @@ import numpy as np
 
 from voiceos.config.settings import TTSSettings
 from voiceos.tts.base import BaseTTS
+from voiceos.utils.http import RETRYABLE_STATUS, error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,19 @@ class CartesiaTTS(BaseTTS):
                 async with self._client.stream(
                     "POST", "/tts/bytes", json=payload
                 ) as response:
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        detail = await error_detail(response)
+                        if response.status_code in RETRYABLE_STATUS and attempt < 3:
+                            logger.warning(
+                                "Cartesia %s (%s); retrying",
+                                response.status_code, detail,
+                            )
+                            await asyncio.sleep(0.3 * 2**attempt)
+                            continue
+                        logger.error(
+                            "Cartesia failed: %s — %s", response.status_code, detail
+                        )
+                        response.raise_for_status()
                     pending = b""
                     async for chunk in response.aiter_bytes():
                         pending += chunk
@@ -89,7 +102,7 @@ class CartesiaTTS(BaseTTS):
                             pending = pending[usable:]
                 return
             except httpx.HTTPStatusError:
-                raise  # auth/quota errors won't improve on retry
+                raise  # non-retryable: bad key, quota exhausted, bad voice id
             except httpx.HTTPError as exc:
                 if emitted:
                     logger.warning(
