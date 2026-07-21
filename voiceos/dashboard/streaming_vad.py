@@ -43,11 +43,17 @@ class StreamingEndpointer:
         self._preroll: list[np.ndarray] = []
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+        self._last_prob = 0.0
 
     @property
     def in_speech(self) -> bool:
         """True while the user is actively speaking (used for barge-in)."""
         return self._in_speech
+
+    @property
+    def last_prob(self) -> float:
+        """VAD probability of the most recently processed frame (for logging)."""
+        return self._last_prob
 
     def snapshot(self) -> np.ndarray:
         """The utterance-so-far, without consuming it — for partial transcripts.
@@ -78,6 +84,7 @@ class StreamingEndpointer:
             frame = self._buf[:_FRAME]
             self._buf = self._buf[_FRAME:]
             prob = self._vad.process(frame.astype(np.float32) / 32768.0, 16000)
+            self._last_prob = prob
             threshold = self._off if self._in_speech else self._on
             if prob >= threshold:
                 if not self._in_speech:
@@ -143,10 +150,16 @@ class SmartTurnEndpointer:
         self._speech_ms = 0.0
         self._silence_ms = 0.0
         self._checked = False
+        self._last_prob = 0.0
 
     @property
     def in_speech(self) -> bool:
         return self._in_speech
+
+    @property
+    def last_prob(self) -> float:
+        """VAD probability of the most recently processed frame (for logging)."""
+        return self._last_prob
 
     def snapshot(self) -> np.ndarray:
         """The utterance-so-far, without consuming it — for partial transcripts."""
@@ -177,6 +190,7 @@ class SmartTurnEndpointer:
             frame = self._buf[:_FRAME]
             self._buf = self._buf[_FRAME:]
             prob = self._vad.process(frame.astype(np.float32) / 32768.0, 16000)
+            self._last_prob = prob
             threshold = self._off if self._in_speech else self._on
             if prob >= threshold:
                 if not self._in_speech:

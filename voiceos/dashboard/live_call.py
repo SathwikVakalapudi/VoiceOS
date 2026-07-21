@@ -346,7 +346,8 @@ async def run_call(
                 except Exception:
                     logger.exception("live call: streaming STT dropped")
                     _stream = None
-            trace.frame("mic", rms_db=round(_rms_db, 1), in_speech=bool(_now_speech))
+            trace.frame("mic", rms_db=round(_rms_db, 1), in_speech=bool(_now_speech),
+                        vad=round(getattr(endpointer, "last_prob", 0.0), 3))
             if _now_speech != _was_speech:
                 await ws.send_json({"type": "speech", "on": bool(_now_speech)})
                 if _now_speech:
