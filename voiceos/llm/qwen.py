@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import AsyncIterator, Sequence
 
 import httpx
@@ -26,6 +27,13 @@ class QwenLLM(BaseLLM):
     def __init__(self, settings: LLMSettings) -> None:
         self._settings = settings
         self._client: httpx.AsyncClient | None = None
+        # OpenAI-compatible is a family, not a standard: gpt-5 renamed
+        # max_tokens, refuses any temperature but 1, and rejects
+        # reasoning_effort values Groq requires. Rather than encode a matrix of
+        # provider quirks, learn them — a rejected parameter is dropped or
+        # renamed on the provider's own say-so and remembered for the session.
+        self._max_tokens_key = "max_tokens"
+        self._unsupported: set[str] = set()
 
     async def load(self) -> None:
         # Short connect timeout: fail fast and retry beats stalling a turn.
@@ -66,15 +74,7 @@ class QwenLLM(BaseLLM):
     async def generate(self, messages: Sequence[Message]) -> AsyncIterator[str]:
         if self._client is None:
             raise RuntimeError("QwenLLM.load() must be called first")
-        payload = {
-            "model": self._settings.model,
-            "messages": list(messages),
-            "stream": True,
-            "temperature": self._settings.temperature,
-            "max_tokens": self._settings.max_tokens,
-        }
-        if self._settings.reasoning_effort is not None:
-            payload["reasoning_effort"] = self._settings.reasoning_effort
+        payload = self._payload(messages, stream=True)
 
         # Flaky networks drop pooled connections: retry as long as nothing
         # has been yielded yet. Once tokens are flowing, a dropped stream
@@ -88,7 +88,10 @@ class QwenLLM(BaseLLM):
                 ) as response:
                     if response.status_code >= 400:
                         detail = await error_detail(response)
-                        if response.status_code in RETRYABLE_STATUS and attempt < 2:
+                        if self._adapt(detail, payload) and attempt < 2:
+                            logger.info("retrying with %s", self._max_tokens_key)
+                            backoff = 0.0
+                        elif response.status_code in RETRYABLE_STATUS and attempt < 2:
                             logger.warning(
                                 "LLM %s from %s (%s); retrying",
                                 response.status_code, self._settings.model, detail,
@@ -148,29 +151,74 @@ class QwenLLM(BaseLLM):
         the raw assistant message dict (possibly carrying tool_calls)."""
         if self._client is None:
             raise RuntimeError("QwenLLM.load() must be called first")
-        payload = {
-            "model": self._settings.model,
-            "messages": list(messages),
-            "stream": False,
-            "temperature": self._settings.temperature,
-            "max_tokens": self._settings.max_tokens,
-        }
+        payload = self._payload(messages, stream=False)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        if self._settings.reasoning_effort is not None:
-            payload["reasoning_effort"] = self._settings.reasoning_effort
 
         response = await self._client.post("/chat/completions", json=payload)
         if response.status_code >= 400:
-            logger.error(
-                "LLM request failed: %s — %s",
-                response.status_code, await error_detail(response),
-            )
-            response.raise_for_status()
+            detail = await error_detail(response)
+            # Several parameters can be rejected in turn (max_tokens, then
+            # temperature, ...), so keep adapting while the endpoint keeps
+            # telling us what it will not accept.
+            for _ in range(3):
+                if not self._adapt(detail, payload):
+                    break
+                response = await self._client.post("/chat/completions", json=payload)
+                if response.status_code < 400:
+                    break
+                detail = await error_detail(response)
+            if response.status_code >= 400:
+                logger.error("LLM request failed: %s — %s",
+                             response.status_code, await error_detail(response))
+                response.raise_for_status()
         data = response.json()
         choices = data.get("choices") or [{}]
         return choices[0].get("message") or {"role": "assistant", "content": ""}
+
+    def _payload(self, messages: Sequence[Message], *, stream: bool) -> dict:
+        """Request body, minus anything this endpoint has already rejected."""
+        body = {
+            "model": self._settings.model,
+            "messages": list(messages),
+            "stream": stream,
+            "temperature": self._settings.temperature,
+            self._max_tokens_key: self._settings.max_tokens,
+        }
+        if self._settings.reasoning_effort is not None:
+            body["reasoning_effort"] = self._settings.reasoning_effort
+        for name in self._unsupported:
+            body.pop(name, None)
+        return body
+
+    def _adapt(self, detail: str, payload: dict) -> bool:
+        """Drop or rename whatever the provider just refused.
+
+        OpenAI names the offending field in quotes, either
+        "Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'
+        instead" or "Unsupported value: 'temperature' does not support 0.7".
+        Renames are honoured; anything else is dropped so the request can
+        proceed on the provider's default. Returns True if the payload changed.
+        """
+        text = detail or ""
+        rename = re.search(r"'([\w.]+)'[^']*?Use '([\w.]+)' instead", text)
+        if rename:
+            old, new = rename.group(1), rename.group(2)
+            if payload.pop(old, None) is not None or old == self._max_tokens_key:
+                if old == self._max_tokens_key:
+                    self._max_tokens_key = new
+                payload[new] = self._settings.max_tokens
+                logger.info("endpoint renamed %r -> %r", old, new)
+                return True
+        bad = re.search(r"Unsupported (?:value|parameter): '([\w.]+)'", text)
+        if bad and bad.group(1) in payload:
+            name = bad.group(1)
+            payload.pop(name)
+            self._unsupported.add(name)
+            logger.info("endpoint rejects %r; dropping it and using its default", name)
+            return True
+        return False
 
     async def close(self) -> None:
         if self._client is not None:

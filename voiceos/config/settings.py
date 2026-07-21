@@ -216,6 +216,11 @@ class ConversationSettings(BaseModel):
     error_message: str = "Sorry, I lost my connection for a moment. Say that again?"
     # JSON file with {"system_prompt", "first_message", "error_message"} — overrides the above.
     campaign_file: str | None = None
+    # A respondent who goes quiet must be prompted, not waited on forever.
+    # The assistant is nudged after this much silence; the campaign prompt
+    # decides what to say, since it already defines the escalation.
+    no_input_timeout_s: float = 5.0
+    no_input_max_prompts: int = 3      # then hang up rather than nag
 
 
 class PipelineSettings(BaseModel):
@@ -238,6 +243,11 @@ class MonitoringSettings(BaseModel):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8081
+    # Per-call records for the dashboard Logs tab.
+    calls_file: str = "results/calls.jsonl"
+    # Optional JSON overriding the built-in provider price list, which is a
+    # snapshot of published rates and goes stale without warning.
+    pricing_file: str | None = None
 
 
 class Settings(BaseSettings):

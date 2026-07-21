@@ -83,3 +83,62 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
             handler=_get_current_time,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Call control
+# ---------------------------------------------------------------------------
+
+END_CALL = "end_call_tool"
+
+# Unlike a lookup tool, this one returns nothing useful to the model — it is a
+# signal to the transport. The caller checks `wants_end_call()` on the reply
+# and hangs up after the farewell has finished playing.
+END_CALL_SCHEMA: dict = {
+    "type": "function",
+    "function": {
+        "name": END_CALL,
+        "description": (
+            "End the phone call. Call this immediately after speaking a farewell "
+            "line, once the conversation is complete or the respondent has "
+            "declined. Produces no speech of its own."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why the call ended, e.g. survey-complete, "
+                                   "declined, wrong-number, hostile.",
+                }
+            },
+            "required": [],
+        },
+    },
+}
+
+
+def wants_end_call(reply: dict | None) -> tuple[bool, str]:
+    """Did the model ask to hang up? Returns (should_end, reason).
+
+    Checks the tool call properly, and also the literal name appearing in the
+    spoken text. The second path is not paranoia: prompts in this repo
+    explicitly warn the model never to "read, speak, pronounce, or spell out"
+    the tool name, which is only written down because models do it. Treating
+    that as an end signal is better than speaking "end_call_tool" at a
+    respondent and then continuing the call forever.
+    """
+    if not reply:
+        return False, ""
+    for call in reply.get("tool_calls") or []:
+        if (call.get("function") or {}).get("name") == END_CALL:
+            import json as _json
+
+            try:
+                args = _json.loads((call["function"] or {}).get("arguments") or "{}")
+            except (ValueError, TypeError):
+                args = {}
+            return True, str(args.get("reason") or "assistant-ended-call")
+    if END_CALL in (reply.get("content") or ""):
+        return True, "assistant-ended-call"
+    return False, ""

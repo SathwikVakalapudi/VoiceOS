@@ -1,5 +1,7 @@
 """Provider errors must be legible, and retryable ones must actually retry."""
 
+import json
+
 import httpx
 import pytest
 
@@ -183,3 +185,145 @@ async def test_cartesia_does_not_retry_a_bad_voice_id():
             pass
 
     assert len(calls) == 1
+
+
+# ---- provider parameter drift ---------------------------------------------
+# OpenAI's newer models renamed max_tokens; Groq/Ollama/vLLM did not. The
+# client adapts on the provider's own error rather than requiring the operator
+# to remember which name goes with which base_url.
+
+
+def _sse_ok() -> bytes:
+    return (b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            b'data: [DONE]\n\n')
+
+
+async def test_streaming_retries_once_with_max_completion_tokens():
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append("max_completion_tokens" if "max_completion_tokens" in body
+                    else "max_tokens")
+        if "max_tokens" in body:
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported parameter: 'max_tokens' is not supported with this "
+                "model. Use 'max_completion_tokens' instead."}})
+        return httpx.Response(200, content=_sse_ok())
+
+    llm = _llm(handler)
+    out = [c async for c in llm.generate([{"role": "user", "content": "hi"}])]
+
+    assert out == ["hi"]
+    assert seen == ["max_tokens", "max_completion_tokens"]
+    # The swap is remembered, so only the first call of a session pays for it.
+    assert llm._max_tokens_key == "max_completion_tokens"
+
+
+async def test_complete_retries_once_with_max_completion_tokens():
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append("max_completion_tokens" if "max_completion_tokens" in body
+                    else "max_tokens")
+        if "max_tokens" in body:
+            # Verbatim from OpenAI — the old name is quoted first, which is
+            # what makes the rename unambiguous.
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported parameter: 'max_tokens' is not supported with this "
+                "model. Use 'max_completion_tokens' instead."}})
+        return httpx.Response(200, json={"choices": [{"message":
+            {"role": "assistant", "content": "ok"}}]})
+
+    llm = _llm(handler)
+    reply = await llm.complete([{"role": "user", "content": "hi"}])
+
+    assert reply["content"] == "ok"
+    assert seen == ["max_tokens", "max_completion_tokens"]
+
+
+async def test_an_unrelated_400_is_not_retried_as_a_parameter_swap():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(400, json={"error": {"message": "model not found"}})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in _llm(handler).generate([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert len(calls) == 1     # no pointless retry on a different problem
+
+
+def test_groq_style_providers_keep_the_original_parameter():
+    from voiceos.config.settings import LLMSettings
+    from voiceos.llm.qwen import QwenLLM
+
+    assert QwenLLM(LLMSettings())._max_tokens_key == "max_tokens"
+
+
+async def test_a_rejected_temperature_is_dropped_and_the_call_proceeds():
+    """gpt-5 accepts only its default temperature. Dropping the parameter is
+    better than failing the turn — the caller gets an answer either way."""
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(sorted(k for k in body if k in ("temperature", "max_tokens",
+                                                    "max_completion_tokens")))
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported value: 'temperature' does not support 0.7 with this "
+                "model. Only the default (1) value is supported."}})
+        return httpx.Response(200, content=_sse_ok())
+
+    llm = _llm(handler)
+    out = [c async for c in llm.generate([{"role": "user", "content": "hi"}])]
+
+    assert out == ["hi"]
+    assert "temperature" in llm._unsupported
+    assert seen[-1] == ["max_tokens"]          # temperature gone, rest intact
+
+
+async def test_several_rejected_parameters_are_learned_in_turn():
+    """gpt-5-nano rejects max_tokens, then temperature. One call must survive
+    both rather than needing a human between them."""
+    def handler(request):
+        body = json.loads(request.content)
+        if "max_tokens" in body:
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported parameter: 'max_tokens' is not supported with this "
+                "model. Use 'max_completion_tokens' instead."}})
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported value: 'temperature' does not support 0.7 with this model."}})
+        return httpx.Response(200, json={"choices": [{"message":
+            {"role": "assistant", "content": "ok"}}]})
+
+    llm = _llm(handler)
+    reply = await llm.complete([{"role": "user", "content": "hi"}])
+
+    assert reply["content"] == "ok"
+    assert llm._max_tokens_key == "max_completion_tokens"
+    assert "temperature" in llm._unsupported
+
+
+async def test_learned_quirks_persist_so_later_turns_pay_nothing():
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(1)
+        if "temperature" in body:
+            return httpx.Response(400, json={"error": {"message":
+                "Unsupported value: 'temperature' does not support 0.7."}})
+        return httpx.Response(200, content=_sse_ok())
+
+    llm = _llm(handler)
+    for _ in range(3):
+        [c async for c in llm.generate([{"role": "user", "content": "hi"}])]
+
+    # First turn costs one extra request; the next two go straight through.
+    assert len(calls) == 4

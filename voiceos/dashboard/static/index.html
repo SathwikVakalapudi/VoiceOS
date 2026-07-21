@@ -67,6 +67,24 @@
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   a.dl{color:var(--accent);font-size:13px}
 </style>
+
+<style>
+.calls { width:100%; border-collapse:collapse; font-size:.82rem; margin-top:.6rem }
+.calls th { text-align:left; opacity:.6; font-weight:500; padding:.4rem .5rem;
+            border-bottom:1px solid rgba(128,128,128,.25) }
+.calls td { padding:.4rem .5rem; border-bottom:1px solid rgba(128,128,128,.12) }
+.calls tr[data-id] { cursor:pointer }
+.calls tr[data-id]:hover { background:rgba(128,128,128,.10) }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:.8rem }
+.card { border:1px solid rgba(128,128,128,.25); border-radius:8px; padding:.8rem }
+.card h4 { margin:0 0 .5rem; font-size:.7rem; letter-spacing:.08em;
+           text-transform:uppercase; opacity:.55 }
+.card .big { font-size:1rem; margin-bottom:.4rem }
+.kv { display:flex; justify-content:space-between; font-size:.78rem; opacity:.75 }
+.bubble { padding:.4rem .7rem; margin:.25rem 0; border-radius:8px;
+          background:rgba(128,128,128,.10); font-size:.85rem }
+.bubble.user { background:rgba(76,154,255,.14) }
+</style>
 </head>
 <body>
 <header>
@@ -79,6 +97,9 @@
   <button data-tab="test">Test</button>
   <button data-tab="dryrun">Dry-run</button>
   <button data-tab="results">Results</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="assistant">Assistant</button>
+  <button data-tab="tools">Tools</button>
 </nav>
 <main>
 
@@ -165,6 +186,34 @@
       <div id="r_out" class="muted">Extracted survey answers appear here after calls complete.</div>
     </div>
   </section>
+
+  <section id="tab-logs" class="tab">
+    <div class="row">
+      <button class="btn" id="l_load">Reload</button>
+      <span class="muted" id="l_count"></span>
+    </div>
+    <table id="l_table" class="calls">
+      <thead><tr>
+        <th>Call ID</th><th>Direction</th><th>Number</th><th>Campaign</th>
+        <th>Ended reason</th><th>Started</th><th>Duration</th>
+        <th>Turns</th><th>Response p50</th><th>Cost</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="l_detail"></div>
+  </section>
+
+  <section id="tab-assistant" class="tab">
+    <div class="row"><button class="btn" id="a_load">Reload</button></div>
+    <div id="a_cards" class="cards"></div>
+    <p class="muted" id="a_note"></p>
+  </section>
+
+  <section id="tab-tools" class="tab">
+    <div class="row"><button class="btn" id="tl_load">Reload</button></div>
+    <div id="tl_list"></div>
+  </section>
+
 
 </main>
 <script>
@@ -309,6 +358,102 @@ $('#r_load').onclick=async()=>{
 };
 
 loadCampaigns();
+
+// ---- Logs -------------------------------------------------------------
+const fmtDur = s => s < 60 ? `${s.toFixed(1)}s`
+  : `${Math.floor(s/60)}m ${Math.round(s%60)}s`;
+
+async function loadCalls() {
+  const rows = await (await fetch('/api/calls?limit=200')).json();
+  document.getElementById('l_count').textContent =
+    rows.length ? `${rows.length} call(s)` : 'no calls recorded yet';
+  document.querySelector('#l_table tbody').innerHTML = rows.map(r => `
+    <tr data-id="${r.call_id}">
+      <td><code>${r.call_id.slice(0,10)}</code></td>
+      <td>${r.direction}</td>
+      <td>${r.number || '—'}</td>
+      <td>${r.campaign || '—'}</td>
+      <td>${r.ended_reason || '—'}</td>
+      <td>${(r.started_at||'').replace('T',' ').replace('+00:00','')}</td>
+      <td>${fmtDur(r.duration_s||0)}</td>
+      <td>${r.turns}</td>
+      <td>${((r.latency_s?.response_s?.p50)||0).toFixed(2)}s</td>
+      <td>$${((r.cost?.total_usd)||0).toFixed(4)}</td>
+    </tr>`).join('');
+  document.querySelectorAll('#l_table tr[data-id]').forEach(tr =>
+    tr.onclick = () => showCall(tr.dataset.id));
+  document.getElementById('l_detail').innerHTML = '';
+}
+
+async function showCall(id) {
+  const c = await (await fetch(`/api/calls/${id}`)).json();
+  const lat = c.latency_s || {};
+  const line = (k, l) => lat[k]?.count
+    ? `<div class="kv"><span>${l}</span><span>p50 ${lat[k].p50}s · p95 ${lat[k].p95}s</span></div>` : '';
+  document.getElementById('l_detail').innerHTML = `
+    <h3>Transcript <span class="muted">${id}</span></h3>
+    <div class="cards"><div class="card">
+      <h4>Latency</h4>
+      ${line('response_s','you stop → audio out')}
+      ${line('stt_s','STT')}${line('llm_ttft_s','LLM first token')}
+      ${line('llm_total_s','LLM total')}
+    </div><div class="card">
+      <h4>Cost <span class="muted">(estimate)</span></h4>
+      <div class="kv"><span>STT</span><span>$${(c.cost?.stt_usd||0).toFixed(5)}</span></div>
+      <div class="kv"><span>LLM</span><span>$${(c.cost?.llm_usd||0).toFixed(5)}</span></div>
+      <div class="kv"><span>TTS</span><span>$${(c.cost?.tts_usd||0).toFixed(5)}</span></div>
+      <div class="kv"><b>total</b><b>$${(c.cost?.total_usd||0).toFixed(5)}</b></div>
+    </div></div>
+    ${(c.transcript||[]).map(t =>
+      `<div class="bubble ${t.role}"><b>${t.role}</b>: ${t.text}</div>`).join('')
+      || '<p class="muted">no transcript captured</p>'}`;
+}
+
+// ---- Assistant --------------------------------------------------------
+async function loadConfig() {
+  const c = await (await fetch('/api/config')).json();
+  const card = (title, big, kvs) => `<div class="card"><h4>${title}</h4>
+    <div class="big">${big}</div>
+    ${kvs.map(([k,v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join('')}
+  </div>`;
+  document.getElementById('a_cards').innerHTML =
+    card('Transcriber', c.transcriber.model, [
+      ['provider', c.transcriber.provider], ['language', c.transcriber.language || 'auto'],
+      ['latency', c.transcriber.typical_latency_ms + 'ms']]) +
+    card('Model', c.model.model, [
+      ['temperature', c.model.temperature], ['max tokens', c.model.max_tokens],
+      ['latency', c.model.typical_latency_ms + 'ms']]) +
+    card('Voice', c.voice.provider, [
+      ['voice', (c.voice.voice_id||'').slice(0,12) + '…'],
+      ['language', c.voice.language], ['latency', c.voice.typical_latency_ms + 'ms']]) +
+    card('Endpointing', c.endpointing.smart_turn ? 'Smart Turn v3' : 'silence timer', [
+      ['threshold', c.endpointing.threshold], ['min silence', c.endpointing.min_silence_ms + 'ms'],
+      ['barge-in', c.endpointing.barge_in ? (c.endpointing.echo_gate ? 'on + echo gate' : 'on') : 'off']]);
+  document.getElementById('a_note').innerHTML =
+    `~$${c.cost_per_minute_usd}/min · ~${c.estimated_response_ms}ms response · ` +
+    `campaign: ${c.campaign || 'none'}<br>` +
+    `<em>Latency figures are measured medians from this project. Cost uses a ` +
+    `price list captured ${c.pricing_captured} — an estimate, not billing.</em>`;
+}
+
+// ---- Tools ------------------------------------------------------------
+async function loadTools() {
+  const tools = await (await fetch('/api/tools')).json();
+  document.getElementById('tl_list').innerHTML = tools.length
+    ? tools.map(t => `<div class="card" style="margin:.5rem 0">
+        <div class="big">${t.name}</div><div class="muted">${t.description}</div></div>`).join('')
+    : '<p class="muted">No tools. Set VOICEOS_LLM__TOOLS_ENABLED=true and register ' +
+      'them on the pipeline before start().</p>';
+}
+
+document.getElementById('l_load').onclick = loadCalls;
+document.getElementById('a_load').onclick = loadConfig;
+document.getElementById('tl_load').onclick = loadTools;
+document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.tab === 'logs') loadCalls();
+  if (b.dataset.tab === 'assistant') loadConfig();
+  if (b.dataset.tab === 'tools') loadTools();
+}));
 </script>
 </body>
 </html>

@@ -93,3 +93,45 @@ async def test_worker_runs_tool_then_stops():
     assert called == ["get_current_time"]       # tool was invoked
     assert any(m.get("role") == "tool" for m in out)  # result fed back
     assert out[0] == {"role": "user", "content": "what time is it?"}  # original kept
+
+
+# ---- call control ---------------------------------------------------------
+
+from voiceos.llm.tools import END_CALL, END_CALL_SCHEMA, wants_end_call  # noqa: E402
+
+
+def test_end_call_schema_is_openai_shaped():
+    fn = END_CALL_SCHEMA["function"]
+    assert END_CALL_SCHEMA["type"] == "function"
+    assert fn["name"] == END_CALL
+    # `reason` must be optional: a model that hangs up without explaining
+    # itself should still hang up rather than fail the call.
+    assert fn["parameters"]["required"] == []
+    assert "reason" in fn["parameters"]["properties"]
+
+
+def test_a_tool_call_ends_the_call_with_its_reason():
+    reply = {"tool_calls": [{"function": {"name": END_CALL,
+                                          "arguments": '{"reason": "survey-complete"}'}}]}
+    assert wants_end_call(reply) == (True, "survey-complete")
+
+
+def test_malformed_arguments_still_end_the_call():
+    reply = {"tool_calls": [{"function": {"name": END_CALL, "arguments": "not json"}}]}
+    end, reason = wants_end_call(reply)
+    assert end and reason == "assistant-ended-call"
+
+
+def test_the_tool_name_spoken_aloud_counts_as_an_end_signal():
+    # Prompts in this repo explicitly forbid speaking the tool name, which is
+    # only written down because models do it. Ending the call beats reading
+    # "end_call_tool" to a respondent and then continuing forever.
+    assert wants_end_call({"content": "धन्यवाद! end_call_tool"})[0] is True
+
+
+def test_an_ordinary_reply_does_not_end_the_call():
+    assert wants_end_call({"content": "आप मोदी को कितना पसंद करते हैं?"}) == (False, "")
+    assert wants_end_call({"tool_calls": [{"function": {"name": "get_current_time"}}]}) \
+        == (False, "")
+    assert wants_end_call(None) == (False, "")
+    assert wants_end_call({}) == (False, "")

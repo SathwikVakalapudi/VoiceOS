@@ -28,6 +28,15 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+
+# Spoken when the respondent never answers. Deliberately not the
+# campaign error_message, which is about a technical fault.
+_NO_RESPONSE_FAREWELL = "समय देने के लिए धन्यवाद, नमस्ते जी।"
+
+
+class _EndCall(Exception):
+    """Raised to unwind out of the nested call loop when the assistant hangs up."""
+
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -98,7 +107,11 @@ def _wav_b64(pcm: np.ndarray, rate: int) -> str:
 
 from voiceos.dashboard.sandbox import TestSandbox
 from voiceos.dashboard.store import CampaignError, CampaignStore
+from voiceos.monitoring.calls import CallRecorder, CallStore
+from voiceos.monitoring.pricing import estimate_call_cost, load_pricing
+from voiceos.pipeline.events import EventBus
 from voiceos.interfaces.llm import BaseLLM
+from voiceos.llm.tools import END_CALL_SCHEMA, wants_end_call
 from voiceos.survey.definition import SurveyDefinition
 from voiceos.survey.store import ResultStore
 
@@ -162,16 +175,22 @@ def create_app(
     llm_factory: Callable[[], BaseLLM] | None = None,
     settings: Any | None = None,
 ) -> FastAPI:
-    if llm_factory is None:
-        if settings is None:
-            from voiceos.config.settings import get_settings
+    # Settings are needed regardless of who supplies the LLM: the call loop,
+    # the config route and the call store all read them. Previously they were
+    # only loaded when no llm_factory was injected, so any caller passing one
+    # left `settings` as None and blew up later.
+    if settings is None:
+        from voiceos.config.settings import get_settings
 
-            settings = get_settings()
+        settings = get_settings()
+    if llm_factory is None:
         from voiceos.pipeline.pipeline import create_llm
 
         llm_factory = lambda: create_llm(settings)  # noqa: E731
 
     store = CampaignStore(campaigns_dir)
+    call_store = CallStore(settings.monitoring.calls_file)
+    pricing = load_pricing(settings.monitoring.pricing_file)
     sandbox = TestSandbox(store, llm_factory=llm_factory)
     results_root = Path(results_dir)
 
@@ -272,7 +291,13 @@ def create_app(
         audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
         return _wav_b64(audio, tts.sample_rate)
 
-    async def _chat(system_prompt: str, history: list, user_message: str) -> str:
+    async def _chat(system_prompt: str, history: list, user_message: str,
+                    allow_end_call: bool = False) -> str:
+        text, _ = await _chat_ex(system_prompt, history, user_message, allow_end_call)
+        return text
+
+    async def _chat_ex(system_prompt: str, history: list, user_message: str,
+                       allow_end_call: bool = False) -> tuple[str, str | None]:
         """One LLM turn: system + trimmed recent history + user. Trimming caps
         tokens-per-request so long prompts don't blow the provider rate limit."""
         import httpx
@@ -282,8 +307,9 @@ def create_app(
         msgs += [{"role": m["role"], "content": m["content"]} for m in turns[-16:]]
         msgs.append({"role": "user", "content": user_message})
         llm = await _shared_llm()
+        tools = [END_CALL_SCHEMA] if allow_end_call else None
         try:
-            r = await _retry(lambda: llm.complete(msgs))
+            r = await _retry(lambda: llm.complete(msgs, tools=tools))
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if code == 429:
@@ -292,7 +318,14 @@ def create_app(
                 raise HTTPException(503, "LLM service is busy right now — please tap and "
                                     "speak again.")
             raise HTTPException(502, f"LLM error: {exc}")
-        return r.get("content", "") if r else ""
+        end, reason = wants_end_call(r) if allow_end_call else (False, "")
+        text = (r.get("content", "") if r else "") or ""
+        # The model is told to speak a farewell and call the tool in the same
+        # turn. If it only called the tool, there is nothing to say — hanging up
+        # in silence is worse than a short goodbye.
+        if end and not text.strip():
+            text = "धन्यवाद, नमस्ते जी।"
+        return text, (reason if end else None)
 
     @app.on_event("startup")
     async def _prewarm() -> None:
@@ -339,6 +372,16 @@ def create_app(
         prompt = cfg.get("system_prompt", "")
         history: list[dict] = []
 
+        # This path predates the EventBus and runs its own loop, so the record
+        # is filled directly rather than by subscribing. Same shape either way.
+        recorder = CallRecorder(
+            EventBus(), store=None, direction="web",
+            campaign=cfg.get("campaign"), assistant=cfg.get("assistant"),
+        )
+        _stt_lat: list[float] = []
+        _llm_lat: list[float] = []
+        reason = "completed"
+
         import asyncio as _asyncio
 
         from voiceos.dashboard.streaming_vad import (
@@ -367,21 +410,98 @@ def create_app(
 
         stt = await _shared_stt(lang)
         speaking = False
+        say_task: asyncio.Task | None = None
+
+        from voiceos.vad.echo import EchoGate
+
+        echo_gate = EchoGate(sample_rate=16000,
+                             window_ms=settings.vad.echo_window_ms,
+                             threshold=settings.vad.echo_gate_threshold)
+        barge_vad = SileroVAD(settings.vad)     # separate: Silero carries state
+        await barge_vad.load()
+        _barge_ms = 0.0
+
+        # Live partials. Sarvam's streaming socket transcribes while the caller
+        # is still talking, so text appears as they speak instead of only after
+        # they stop. The committed utterance is still transcribed in batch if
+        # the stream returns nothing, so a socket failure costs partials, not
+        # the turn.
+        from voiceos.stt.sarvam_streaming import SarvamStreamingSTT
+
+        _live_stt = (settings.stt.provider == "sarvam"
+                     and settings.stt.sarvam_streaming)
+        _stream = None
+        _shown = ""
+        _was_speech = False
+
+        def nonlocal_idle_reset(at: float | None = None) -> None:
+            """Start the silence clock — by default now, or when playback ends."""
+            nonlocal _idle_since
+            _idle_since = at if at is not None else time.monotonic()
 
         async def say(text: str) -> None:
+            """Stream a reply. Runs as a task so the mic keeps being read —
+            blocking here made barge-in impossible, since no frames were
+            received at all while the assistant was talking."""
             nonlocal speaking
             speaking = True
-            tts = await _shared_tts(lang)
-            await ws.send_json({"type": "audio_start", "rate": tts.sample_rate})
-            clean = (text or "").replace("end_call_tool", "").strip()
+            speak_until = time.monotonic()
             try:
+                tts = await _shared_tts(lang)
+                await ws.send_json({"type": "audio_start", "rate": tts.sample_rate})
+                clean = (text or "").replace("end_call_tool", "").strip()
+                if not clean:
+                    # An empty reply is a real failure, not something to hand to
+                    # TTS: the provider rejects it and the caller hears silence
+                    # with no indication anything went wrong.
+                    logger.error("live call: LLM returned no text — nothing to speak")
+                    await ws.send_json({"type": "error",
+                                        "text": "LLM returned an empty reply"})
+                    await ws.send_json({"type": "listening"})
+                    return
+                _sent = 0
+                _t_first = None
                 async for chunk in tts.synthesize(clean):
-                    await ws.send_bytes(np.ascontiguousarray(chunk, dtype="<i2").tobytes())
+                    pcm = np.ascontiguousarray(chunk, dtype="<i2")
+                    if _t_first is None:
+                        _t_first = time.monotonic()
+                    _sent += pcm.size
+                    # Reference for the echo gate: this is exactly what the
+                    # caller is about to hear, so anything correlating with it
+                    # in the mic is our own voice, not an interruption.
+                    echo_gate.push_reference(pcm, tts.sample_rate)
+                    await ws.send_bytes(pcm.tobytes())
+                await ws.send_json({"type": "audio_end"})
+                logger.info("live call: sent %.2fs of audio (%d samples @ %d Hz)",
+                            _sent / max(1, tts.sample_rate), _sent, tts.sample_rate)
+                # Sending finishes far sooner than playback: eight seconds of
+                # greeting streams out in about one and a half. Charging the
+                # idle timer from here fired the silence nudge while the caller
+                # was still listening to the greeting.
+                audio_s = _sent / max(1, tts.sample_rate)
+                elapsed = time.monotonic() - (_t_first or time.monotonic())
+                speak_until = time.monotonic() + max(0.0, audio_s - elapsed)
+            except asyncio.CancelledError:
+                await ws.send_json({"type": "interrupt"})   # flush browser buffer
+                raise
             except Exception:
-                pass
-            await ws.send_json({"type": "audio_end"})
-            endpointer.reset()             # discard any echo captured during playback
-            speaking = False
+                logger.exception("live call: TTS failed")
+            finally:
+                endpointer.reset()         # drop any echo captured during playback
+                echo_gate.reset()
+                speaking = False
+                nonlocal_idle_reset(speak_until)
+
+        async def speak(text: str) -> None:
+            nonlocal say_task
+            say_task = asyncio.create_task(say(text))
+            try:
+                await asyncio.shield(say_task)
+            except asyncio.CancelledError:
+                pass                        # barge-in cancelled it; keep listening
+            finally:
+                say_task = None
+            await ws.send_json({"type": "listening"})
             await ws.send_json({"type": "listening"})
 
         # opening line
@@ -391,12 +511,26 @@ def create_app(
                 "and consent line now.]")
             history.append({"role": "assistant", "content": reply})
             await ws.send_json({"type": "reply", "text": reply})
-            await say(reply)
+            await speak(reply)
         except Exception as exc:
             try:
                 await ws.send_json({"type": "error", "text": str(exc)})
             except Exception:
                 return  # client already gone
+
+        # Without these the loop fails silently: audio can flow for a minute
+        # with the endpointer never committing, and the log looks identical to
+        # a browser that is sending nothing at all.
+        _frames = _samples = _ignored = _committed = 0
+        _peak = 0.0
+        _logged_first = False
+        # Audio keeps arriving whether or not anyone speaks, so the frame
+        # stream doubles as the clock: no committed utterance for this long
+        # means the respondent has gone quiet.
+        _idle_since = time.monotonic()
+        _prompts = 0
+        _no_input_s = settings.conversation.no_input_timeout_s
+        _max_prompts = settings.conversation.no_input_max_prompts
 
         try:
             while True:
@@ -404,33 +538,194 @@ def create_app(
                 if msg.get("type") == "websocket.disconnect":
                     break
                 data = msg.get("bytes")
-                if data is None or speaking:      # ignore mic while the agent talks
+                if data is None:
                     continue
-                for utt in await next_utts(np.frombuffer(data, dtype="<i2")):
-                    await ws.send_json({"type": "thinking"})
+                if speaking:
+                    _ignored += 1
+                    # Rule J: stop immediately and listen, never talk over them.
+                    # The echo gate is what makes this safe on a loudspeaker —
+                    # without it the assistant hears itself and interrupts
+                    # itself in a loop.
+                    _sig = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768
+                    _p = barge_vad.process(_sig[:512], 16000)
+                    _corr = echo_gate.correlation(_sig[:512])
+                    if (_p >= settings.vad.barge_in_threshold
+                            and _corr < settings.vad.echo_gate_threshold):
+                        _barge_ms += len(data) / 2 / 16
+                    else:
+                        _barge_ms = 0.0
+                    if _barge_ms >= settings.vad.barge_in_speech_ms and say_task:
+                        logger.info("live call: BARGE-IN fired after %.0f ms "
+                                    "(vad=%.2f, echo_corr=%.2f) — cancelling playback",
+                                    _barge_ms, _p, _corr)
+                        _barge_ms = 0.0
+                        say_task.cancel()
+                    continue
+                _frames += 1
+                _samples += len(data) // 2
+                _pcm = np.frombuffer(data, dtype="<i2")
+                # Level matters as much as arrival: 64 s of frames with the VAD
+                # never latching means silence, and a frame count alone cannot
+                # tell a muted device from a quiet one.
+                _peak = max(_peak, float(np.abs(_pcm).max()) / 32768 if _pcm.size else 0.0)
+                if not _logged_first:
+                    _logged_first = True
+                    logger.info("live call: first audio frame (%d samples)", _pcm.size)
+                if _frames % 100 == 0:
+                    _db = 20 * np.log10(_peak) if _peak > 0 else -99
+                    logger.info("live call: %d frames / %.1fs in · peak %.0f dBFS%s · "
+                                "in_speech=%s · %d committed",
+                                _frames, _samples / 16000, _db,
+                                "  <-- SILENT, check the mic device" if _db < -45 else "",
+                                getattr(endpointer, "in_speech", "?"), _committed)
+                    _peak = 0.0
+                if (not speaking and _no_input_s > 0
+                        and time.monotonic() - _idle_since > _no_input_s):
+                    _prompts += 1
+                    _idle_since = time.monotonic()
+                    if _prompts > _max_prompts:
+                        logger.info("live call: silent after %d prompts — hanging up",
+                                    _max_prompts)
+                        await speak(_NO_RESPONSE_FAREWELL)
+                        await ws.send_json({"type": "ended", "reason": "no-response"})
+                        reason = "no-response"
+                        raise _EndCall
+                    logger.info("live call: no input for %.0fs — nudge %d/%d",
+                                _no_input_s, _prompts, _max_prompts)
+                    # The campaign prompt already defines the escalation
+                    # ("क्या आप लाइन पर हैं?" -> re-ask -> farewell), so tell the
+                    # model what happened rather than hardcoding a line here.
                     try:
-                        res = await _retry(lambda: stt.transcribe(utt, 16000))
-                        transcript = (res.text or "").strip()
+                        nudge, end_reason = await _chat_ex(
+                            prompt, history,
+                            f"[SYSTEM: The respondent has been silent for "
+                            f"{_no_input_s:.0f} seconds. This is silence prompt "
+                            f"{_prompts} of {_max_prompts}. Follow your no-response "
+                            f"procedure. Speak only the line, nothing else.]",
+                            allow_end_call=True)
                     except Exception:
+                        logger.exception("live call: silence nudge failed")
+                        nudge, end_reason = "", None
+                    if nudge.strip():
+                        history.append({"role": "assistant", "content": nudge})
+                        recorder.record.transcript.append(
+                            {"role": "assistant", "text": nudge, "nudge": True})
+                        await ws.send_json({"type": "reply", "text": nudge})
+                        await speak(nudge)
+                        _idle_since = time.monotonic()
+                    if end_reason:
+                        await ws.send_json({"type": "ended", "reason": end_reason})
+                        reason = end_reason
+                        raise _EndCall
+
+                # Open the streaming socket the moment speech latches, and
+                # keep feeding it so the transcript is nearly done by the time
+                # the endpointer commits.
+                _now_speech = getattr(endpointer, "in_speech", False)
+                if _live_stt and _now_speech and _stream is None:
+                    try:
+                        _stream = SarvamStreamingSTT(settings.stt)
+                        await _stream.start()
+                        _shown = ""
+                    except Exception:
+                        logger.exception("live call: could not open streaming STT")
+                        _stream = None
+                if _stream is not None:
+                    try:
+                        await _stream.send(_pcm)
+                        if _stream.partial and _stream.partial != _shown:
+                            _shown = _stream.partial
+                            await ws.send_json({"type": "partial", "text": _shown})
+                    except Exception:
+                        logger.exception("live call: streaming STT dropped")
+                        _stream = None
+                if _now_speech != _was_speech:
+                    await ws.send_json({"type": "speech", "on": bool(_now_speech)})
+                _was_speech = _now_speech
+
+                for utt in await next_utts(_pcm):
+                    _committed += 1
+                    _idle_since = time.monotonic()   # they spoke; reset the clock
+                    _prompts = 0
+                    logger.info("live call: utterance committed (%.2fs)", utt.size / 16000)
+                    await ws.send_json({"type": "thinking"})
+                    _t0 = time.perf_counter()
+                    transcript = ""
+                    if _stream is not None:
+                        try:
+                            transcript, _ = await _stream.finish(quiet_ms=150)
+                            transcript = (transcript or "").strip()
+                        except Exception:
+                            logger.exception("live call: streaming finish failed")
+                        finally:
+                            _stream = None
+                            _shown = ""
+                    try:
+                        if not transcript:
+                            res = await _retry(lambda: stt.transcribe(utt, 16000))
+                            transcript = (res.text or "").strip()
+                    except Exception as exc:
+                        logger.exception("live call: STT failed")
+                        await ws.send_json({"type": "error",
+                                            "text": f"STT: {type(exc).__name__}"})
                         transcript = ""
+                    _stt_lat.append(time.perf_counter() - _t0)
                     if not transcript:
                         await ws.send_json({"type": "listening"})
                         continue
                     await ws.send_json({"type": "transcript", "text": transcript})
+                    recorder.record.transcript.append(
+                        {"role": "user", "text": transcript, "language": lang})
+                    _t1 = time.perf_counter()
                     try:
-                        reply = await _chat(prompt, history, transcript)
+                        reply, end_reason = await _chat_ex(
+                            prompt, history, transcript, allow_end_call=True)
                     except HTTPException as he:
+                        logger.warning("live call: LLM rejected (%s)", he.detail)
                         await ws.send_json({"type": "error", "text": he.detail})
                         await ws.send_json({"type": "listening"})
                         continue
+                    except Exception as exc:
+                        # Previously any non-HTTP error escaped to the outer
+                        # handler and silently ended the call; the browser just
+                        # stopped responding with no reason shown anywhere.
+                        logger.exception("live call: LLM failed")
+                        await ws.send_json({"type": "error",
+                                            "text": f"LLM: {type(exc).__name__}: {exc}"})
+                        await ws.send_json({"type": "listening"})
+                        continue
+                    _llm_lat.append(time.perf_counter() - _t1)
+                    recorder.record.transcript.append({"role": "assistant", "text": reply})
+                    recorder.record.turns += 1
                     history.append({"role": "user", "content": transcript})
                     history.append({"role": "assistant", "content": reply})
                     await ws.send_json({"type": "reply", "text": reply})
-                    await say(reply)
+                    await speak(reply)
+                    if end_reason:
+                        logger.info("live call: assistant ended the call (%s)", end_reason)
+                        await ws.send_json({"type": "ended", "reason": end_reason})
+                        reason = end_reason
+                        raise _EndCall
+            reason = "customer-ended-call"
+        except _EndCall:
+            pass                       # assistant hung up; record it and close
         except WebSocketDisconnect:
-            pass
+            reason = "customer-ended-call"
         except Exception:
-            pass
+            logger.exception("live call ended on an unhandled error")
+            reason = "pipeline-error"
+        finally:
+            recorder._samples["stt_s"] = _stt_lat
+            recorder._samples["llm_total_s"] = _llm_lat
+            rec = recorder.finish(ended_reason=reason)
+            rec.cost = estimate_call_cost(
+                rec.duration_s, rec.turns,
+                stt_provider=settings.stt.provider,
+                tts_provider=settings.tts.provider,
+                llm_model=settings.llm.model,
+                pricing=pricing,
+            )
+            call_store.add(rec)
 
     # ---- Live voice-conversation tester (any prompt, any language) ----
     @app.post("/api/live/reply")
@@ -534,6 +829,103 @@ def create_app(
         return {"reply": reply, "audio_b64": await _synthesize(reply, body.language)}
 
     # ---- Campaign CRUD ----
+    @app.get("/api/live/defaults")
+    def live_defaults() -> dict:
+        """Prompt and greeting for the live tester.
+
+        The page refuses to start with an empty prompt box, which looked
+        identical to a broken microphone: no socket, no audio, no error. It now
+        loads the active campaign so the box is never empty by accident.
+        """
+        from voiceos.conversation.manager import ConversationManager
+
+        manager = ConversationManager(settings.conversation)
+        return {
+            "system_prompt": manager._system_prompt,
+            "first_message": manager.first_message or "",
+            "language": settings.stt.sarvam_language or "hi-IN",
+            "campaign": settings.conversation.campaign_file,
+            "stack": (f"{settings.stt.provider} + "
+                      f"{settings.llm.model.split('/')[-1]} + {settings.tts.provider}"),
+        }
+
+    # ---- Logs: per-call records ----
+    @app.get("/api/calls")
+    def list_calls(limit: int = 100) -> list[dict]:
+        """Newest first, without transcripts — the table only needs a summary."""
+        return [{k: v for k, v in r.items() if k != "transcript"}
+                for r in call_store.records(limit=limit)]
+
+    @app.get("/api/calls/{call_id}")
+    def get_call(call_id: str) -> dict:
+        record = call_store.get(call_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no such call")
+        return record
+
+    # ---- Assistant: what this deployment is actually configured with ----
+    @app.get("/api/config")
+    def get_config() -> dict:
+        """Live provider configuration plus an order-of-magnitude cost model.
+
+        Latency figures are measured medians from this project's own runs, not
+        vendor claims. Cost is estimated from a price snapshot — see
+        monitoring/pricing.py for why that is only ever an estimate.
+        """
+        one_minute = estimate_call_cost(
+            60, 6, stt_provider=settings.stt.provider,
+            tts_provider=settings.tts.provider, llm_model=settings.llm.model,
+            pricing=pricing,
+        )
+        return {
+            "transcriber": {
+                "provider": settings.stt.provider,
+                "model": (settings.stt.sarvam_model if settings.stt.provider == "sarvam"
+                          else settings.stt.model),
+                "language": settings.stt.sarvam_language or settings.stt.language,
+                "typical_latency_ms": 400,
+            },
+            "model": {
+                "provider": settings.llm.base_url,
+                "model": settings.llm.model,
+                "temperature": settings.llm.temperature,
+                "max_tokens": settings.llm.max_tokens,
+                "typical_latency_ms": 160,
+            },
+            "voice": {
+                "provider": settings.tts.provider,
+                "voice_id": settings.tts.cartesia_voice_id,
+                "language": settings.tts.cartesia_language,
+                "sample_rate": settings.tts.sample_rate,
+                "typical_latency_ms": 220,
+            },
+            "endpointing": {
+                "smart_turn": settings.vad.smart_turn,
+                "threshold": settings.vad.smart_turn_threshold,
+                "min_silence_ms": settings.vad.min_silence_ms,
+                "barge_in": settings.vad.barge_in,
+                "echo_gate": settings.vad.echo_gate,
+            },
+            "campaign": settings.conversation.campaign_file,
+            "cost_per_minute_usd": one_minute["per_minute_usd"],
+            "estimated_response_ms": 1050,
+            "pricing_captured": pricing.get("_captured", "unknown"),
+        }
+
+    # ---- Tools ----
+    @app.get("/api/tools")
+    def list_tools() -> list[dict]:
+        if not settings.llm.tools_enabled:
+            return []
+        from voiceos.llm.tools import ToolRegistry, register_builtin_tools
+
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        return [{"name": t["function"]["name"],
+                 "description": t["function"]["description"],
+                 "parameters": t["function"].get("parameters", {})}
+                for t in registry.schemas()]
+
     @app.get("/api/campaigns")
     async def list_campaigns() -> list[dict]:
         return store.list()

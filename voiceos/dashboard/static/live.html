@@ -46,6 +46,15 @@
   <div id="ctxbad" class="box bad hidden"></div>
   <div class="card" id="setup">
     <div class="row">
+      <div style="flex:1"><label>Microphone</label>
+        <select id="mic"><option value="">Default device</option></select>
+        <div style="margin-top:.4rem;font-size:.78rem;opacity:.75">
+          <button type="button" id="micTest" class="ghost">Test microphone</button>
+          <span id="micLevel">not tested</span>
+        </div>
+      </div>
+    </div>
+    <div class="row">
       <div><label>Language</label>
         <select id="lang">
           <option value="hi-IN">Hindi — हिन्दी</option><option value="en-IN">English</option>
@@ -79,24 +88,51 @@ function setPhase(p,t){ const c=({listen:"listen",think:"think",speak:"speak"})[
 function addMsg(t,who){ const d=document.createElement("div"); d.className="msg "+who; d.textContent=t; $("#chat").appendChild(d); $("#chat").scrollTop=$("#chat").scrollHeight; }
 if(!window.isSecureContext){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").innerHTML="⚠️ Open on <b>http://localhost:8080/live</b> (not an IP) — mic needs that."; }
 
+let queued=[];   // sources scheduled but not yet finished
+// Live transcript while the caller is still talking. Kept visually distinct
+// from a committed line: these revise as more audio arrives, so presenting
+// them as final text would look like the transcript changing its mind.
+let partialEl=null;
+function showPartial(t){
+  if(!t) return;
+  if(!partialEl){
+    partialEl=document.createElement("div");
+    partialEl.className="msg user";
+    partialEl.style.opacity=".55"; partialEl.style.fontStyle="italic";
+    $("#chat").appendChild(partialEl);
+  }
+  partialEl.textContent=t;
+  $("#chat").scrollTop=$("#chat").scrollHeight;
+}
+function clearPartial(){ if(partialEl){ partialEl.remove(); partialEl=null; } }
+
 function playChunk(ab){
   const pcm=new Int16Array(ab); const f=new Float32Array(pcm.length);
   for(let i=0;i<pcm.length;i++) f[i]=pcm[i]/32768;
   const buf=ac.createBuffer(1,f.length,ttsRate); buf.getChannelData(0).set(f);
   const s=ac.createBufferSource(); s.buffer=buf; s.connect(ac.destination);
   nextTime=Math.max(nextTime, ac.currentTime+0.05); s.start(nextTime); nextTime+=buf.duration;
+  queued.push(s); s.onended=()=>{ queued=queued.filter(x=>x!==s); };
+}
+
+// Barge-in: the server stopped generating, but seconds of audio may already be
+// scheduled here. Without stopping those, the assistant keeps talking over the
+// caller for as long as the buffer lasts.
+function stopPlayback(){
+  queued.forEach(s=>{ try{ s.stop(); }catch(_){} });
+  queued=[]; nextTime=ac?ac.currentTime:0;
 }
 
 async function startCall(){
   if(!$("#prompt").value.trim()){ alert("Paste the campaign prompt first."); return; }
   const lang=$("#lang").value;
-  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}); }
+  try{ stream=await navigator.mediaDevices.getUserMedia(micConstraints()); }
   catch(e){ $("#ctxbad").classList.remove("hidden"); $("#ctxbad").textContent="Microphone blocked — allow it and reload."; return; }
   const AC=window.AudioContext||window.webkitAudioContext;
   try{ ac=new AC({sampleRate:16000}); }catch(_){ ac=new AC(); }
   await ac.resume(); log("mic @ "+ac.sampleRate+"Hz");
   running=true; $("#setup").classList.add("hidden"); $("#live").classList.remove("hidden"); $("#chat").innerHTML="";
-  $("#liveHint").textContent=lang+" · Silero VAD + Sarvam + Gemini + Cartesia";
+  $("#liveHint").textContent=lang+" · "+(window.__stack||"Silero VAD");
 
   const proto = location.protocol==="https:"?"wss:":"ws:";
   ws=new WebSocket(proto+"//"+location.host+"/ws/call"); ws.binaryType="arraybuffer";
@@ -109,9 +145,25 @@ async function startCall(){
     else if(m.type==="audio_end"){ /* playback tail continues */ }
     else if(m.type==="listening"){ setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); }
     else if(m.type==="thinking"){ setPhase("think","सोच रहे हैं… / Thinking…"); }
-    else if(m.type==="transcript"){ addMsg(m.text,"user"); }
+    else if(m.type==="partial"){ showPartial(m.text); }
+    else if(m.type==="speech"){
+      // Driven by the same server-side VAD the endpointer acts on, so this is
+      // exactly what the pipeline believes — not a guess from browser levels.
+      const el=$("#statusText");
+      if(m.on){ el.dataset.heard="1"; setPhase("listen","🎤 आपकी आवाज़ आ रही है… / Hearing you…"); }
+      else if(el.dataset.heard){ el.dataset.heard=""; setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); }
+    }
+    else if(m.type==="transcript"){ clearPartial(); addMsg(m.text,"user"); }
     else if(m.type==="reply"){ addMsg(m.text,"bot"); }
     else if(m.type==="error"){ addMsg("⚠️ "+m.text,"bot"); log("error: "+m.text); }
+    else if(m.type==="interrupt"){ stopPlayback(); setPhase("listen","सुन रहे हैं — बोलिए / Listening…"); log("barge-in — you interrupted"); }
+    else if(m.type==="ended"){
+      // Let the farewell finish playing before tearing the audio graph down,
+      // otherwise the caller hears the goodbye cut off mid-word.
+      log("assistant ended the call: "+(m.reason||""));
+      setPhase("","Call ended by assistant");
+      setTimeout(endCall, 2500);
+    }
   };
   ws.onclose=()=>{ log("ws closed"); if(running) setPhase("","Disconnected"); };
   ws.onerror=()=>log("ws error");
@@ -136,7 +188,68 @@ function endCall(){ running=false; try{ws&&ws.close()}catch(_){}
   try{ stream&&stream.getTracks().forEach(t=>t.stop()); }catch(_){}
   try{ ac&&ac.close(); }catch(_){}; ac=null;
   setPhase("","Ended"); $("#live").classList.add("hidden"); $("#setup").classList.remove("hidden"); }
+function micConstraints(){
+  const id=$("#mic").value;
+  const a={echoCancellation:true,noiseSuppression:false,autoGainControl:true};
+  if(id) a.deviceId={exact:id};
+  return {audio:a};
+}
+
+async function listMics(){
+  try{
+    const sel=$("#mic");
+    const keep=sel.value;                    // rebuilding innerHTML resets the
+    const devs=await navigator.mediaDevices.enumerateDevices();
+    const ins=devs.filter(d=>d.kind==="audioinput"
+                            && d.deviceId!=="default"
+                            && d.deviceId!=="communications");
+    // Labels stay blank until permission has been granted at least once, and
+    // Windows exposes the same physical mic three times (default /
+    // communications / raw). Only the raw entries are listed.
+    sel.innerHTML='<option value="">Default device</option>'+
+      ins.map((d,i)=>`<option value="${d.deviceId}">${d.label||("Microphone "+(i+1))}</option>`).join("");
+    if(keep && [...sel.options].some(o=>o.value===keep)) sel.value=keep;  // selection survives
+  }catch(_){ }
+}
+
+// Ten seconds of digital silence looks identical to a working call that nobody
+// spoke into. Measure before dialling instead of after.
+$("#micTest").onclick=async()=>{
+  const el=$("#micLevel"); el.textContent="testing… speak now";
+  let s,actx;
+  try{ s=await navigator.mediaDevices.getUserMedia(micConstraints()); }
+  catch(e){ el.textContent="blocked: "+e.name; return; }
+  await listMics();
+  actx=new (window.AudioContext||window.webkitAudioContext)();
+  const an=actx.createAnalyser(); an.fftSize=2048;
+  actx.createMediaStreamSource(s).connect(an);
+  const buf=new Float32Array(an.fftSize);
+  let peak=0; const t0=performance.now();
+  (function poll(){
+    an.getFloatTimeDomainData(buf);
+    for(let i=0;i<buf.length;i++){ const a=Math.abs(buf[i]); if(a>peak)peak=a; }
+    const db=peak>0?20*Math.log10(peak):-99;
+    el.textContent=`peak ${db.toFixed(0)} dBFS`+(db<-45?"  ⚠ silent — wrong device, or Brave Shields is zeroing audio":db<-30?"  (quiet — move closer)":"  ✓ good");
+    if(performance.now()-t0<5000) requestAnimationFrame(poll);
+    else { s.getTracks().forEach(t=>t.stop()); actx.close(); }
+  })();
+};
+
+$("#mic").onchange=()=>{ $("#micLevel").textContent="device changed — press Test"; };
+listMics();
+navigator.mediaDevices.addEventListener?.("devicechange", listMics);
+
 $("#startBtn").onclick=startCall; $("#endBtn").onclick=endCall;
+
+// Prefill from the active campaign. An empty prompt box silently blocks the
+// call, which is indistinguishable from a dead microphone.
+fetch("/api/live/defaults").then(r=>r.json()).then(d=>{
+  if(!$("#prompt").value.trim()) $("#prompt").value = d.system_prompt || "";
+  if(!$("#firstmsg").value.trim()) $("#firstmsg").value = d.first_message || "";
+  if(d.language){ const o=[...$("#lang").options].find(o=>o.value===d.language); if(o) $("#lang").value=d.language; }
+  window.__stack = "Silero VAD + " + (d.stack||"");
+  log("loaded campaign: " + (d.campaign || "none"));
+}).catch(()=>log("could not load campaign defaults"));
 </script>
 </body>
 </html>
