@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 
 import numpy as np
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
+from voiceos.dashboard.call_trace import CallTrace
 from voiceos.dashboard.voice_services import VoiceServices, retry
 from voiceos.monitoring.calls import CallRecorder, CallStore
 from voiceos.monitoring.pricing import estimate_call_cost
@@ -55,6 +57,11 @@ async def run_call(
         EventBus(), store=None, direction="web",
         campaign=cfg.get("campaign"), assistant=cfg.get("assistant"),
     )
+    # Frame-level JSONL trace only when asked (?debug=1 on /live, or VOICEOS_TRACE=1);
+    # the console events and the final CALL END summary are always emitted.
+    _debug = (bool(cfg.get("debug"))
+              or os.environ.get("VOICEOS_TRACE", "").lower() in ("1", "true", "yes"))
+    trace = CallTrace(recorder.record.call_id, enabled=_debug)
     _stt_lat: list[float] = []
     _llm_lat: list[float] = []
     reason = "completed"
@@ -82,6 +89,16 @@ async def run_call(
 
         async def next_utts(pcm):
             return endpointer.push(pcm)
+
+    trace.event("CALL", "start", lang=lang,
+                stt=f"{settings.stt.provider}/{settings.stt.sarvam_model}",
+                llm=settings.llm.model,
+                tts=f"{settings.tts.provider}/{settings.tts.cartesia_model}",
+                endpointer=("smart-turn" if smart_turn is not None else "silence"),
+                vad_thr=settings.vad.threshold, barge_thr=settings.vad.barge_in_threshold,
+                echo_thr=settings.vad.echo_gate_threshold,
+                silence_ms=settings.vad.min_silence_ms,
+                trace=("on" if _debug else "off"))
 
     stt = await services.stt(lang)
     speaking = False
@@ -121,6 +138,8 @@ async def run_call(
         nonlocal speaking
         speaking = True
         speak_until = time.monotonic()
+        _say_t0 = time.monotonic()
+        trace.barge_reset()
         try:
             tts = await services.tts(lang)
             await ws.send_json({"type": "audio_start", "rate": tts.sample_rate})
@@ -149,6 +168,12 @@ async def run_call(
             await ws.send_json({"type": "audio_end"})
             logger.info("live call: sent %.2fs of audio (%d samples @ %d Hz)",
                         _sent / max(1, tts.sample_rate), _sent, tts.sample_rate)
+            if _t_first is not None:
+                trace.tts_first_ms = (_t_first - trace._t0) * 1000
+                trace.event("TTS", settings.tts.provider,
+                            first_audio_ms=round((_t_first - _say_t0) * 1000),
+                            total_ms=round((time.monotonic() - _say_t0) * 1000),
+                            audio_s=round(_sent / max(1, tts.sample_rate), 2))
             # Sending finishes far sooner than playback: eight seconds of
             # greeting streams out in about one and a half. Charging the
             # idle timer from here fired the silence nudge while the caller
@@ -161,6 +186,7 @@ async def run_call(
             raise
         except Exception:
             logger.exception("live call: TTS failed")
+            trace.error("tts", "synth failed")
         finally:
             endpointer.reset()         # drop any echo captured during playback
             echo_gate.reset()
@@ -176,6 +202,7 @@ async def run_call(
             pass                        # barge-in cancelled it; keep listening
         finally:
             say_task = None
+        trace.barge_summary(settings.vad.barge_in_speech_ms)
         await ws.send_json({"type": "listening"})
         await ws.send_json({"type": "listening"})
 
@@ -229,10 +256,12 @@ async def run_call(
                     _barge_ms += len(data) / 2 / 16
                 else:
                     _barge_ms = 0.0
+                trace.barge_observe(_p, _corr, _barge_ms)
                 if _barge_ms >= settings.vad.barge_in_speech_ms and say_task:
                     logger.info("live call: BARGE-IN fired after %.0f ms "
                                 "(vad=%.2f, echo_corr=%.2f) — cancelling playback",
                                 _barge_ms, _p, _corr)
+                    trace.barge_fired(_p, _corr, _barge_ms)
                     _barge_ms = 0.0
                     say_task.cancel()
                 continue
@@ -243,6 +272,8 @@ async def run_call(
             # never latching means silence, and a frame count alone cannot
             # tell a muted device from a quiet one.
             _peak = max(_peak, float(np.abs(_pcm).max()) / 32768 if _pcm.size else 0.0)
+            _rms = float(np.sqrt(np.mean((_pcm.astype(np.float32) / 32768.0) ** 2))) if _pcm.size else 0.0
+            _rms_db = 20 * np.log10(_rms) if _rms > 1e-9 else -99.0
             if not _logged_first:
                 _logged_first = True
                 logger.info("live call: first audio frame (%d samples)", _pcm.size)
@@ -267,6 +298,7 @@ async def run_call(
                     raise EndCall
                 logger.info("live call: no input for %.0fs — nudge %d/%d",
                             _no_input_s, _prompts, _max_prompts)
+                trace.event("SILENCE", f"nudge {_prompts}/{_max_prompts}")
                 # The campaign prompt already defines the escalation
                 # ("क्या आप लाइन पर हैं?" -> re-ask -> farewell), so tell the
                 # model what happened rather than hardcoding a line here.
@@ -314,8 +346,14 @@ async def run_call(
                 except Exception:
                     logger.exception("live call: streaming STT dropped")
                     _stream = None
+            trace.frame("mic", rms_db=round(_rms_db, 1), in_speech=bool(_now_speech))
             if _now_speech != _was_speech:
                 await ws.send_json({"type": "speech", "on": bool(_now_speech)})
+                if _now_speech:
+                    trace.utt_reset()
+                    trace.event("SPEECH", "start")
+            if _now_speech:
+                trace.utt_add_rms(_rms_db)
             _was_speech = _now_speech
 
             for utt in await next_utts(_pcm):
@@ -323,6 +361,11 @@ async def run_call(
                 _idle_since = time.monotonic()   # they spoke; reset the clock
                 _prompts = 0
                 logger.info("live call: utterance committed (%.2fs)", utt.size / 16000)
+                trace.turn = _committed
+                _t_speech_end = trace.now_ms()
+                trace.event("SPEECH", "end", dur_ms=round(utt.size / 16000 * 1000),
+                            endpointer=("smart-turn" if smart_turn is not None else "silence"),
+                            **trace.utt_summary())
                 await ws.send_json({"type": "thinking"})
                 _t0 = time.perf_counter()
                 transcript = ""
@@ -343,8 +386,11 @@ async def run_call(
                     logger.exception("live call: STT failed")
                     await ws.send_json({"type": "error",
                                         "text": f"STT: {type(exc).__name__}"})
+                    trace.error("stt", type(exc).__name__)
                     transcript = ""
                 _stt_lat.append(time.perf_counter() - _t0)
+                trace.event("STT", "", ms=round((time.perf_counter() - _t0) * 1000),
+                            text=transcript[:40], len=len(transcript), live=_live_stt)
                 if not transcript:
                     await ws.send_json({"type": "listening"})
                     continue
@@ -358,6 +404,7 @@ async def run_call(
                 except HTTPException as he:
                     logger.warning("live call: LLM rejected (%s)", he.detail)
                     await ws.send_json({"type": "error", "text": he.detail})
+                    trace.error("llm", str(he.detail))
                     await ws.send_json({"type": "listening"})
                     continue
                 except Exception as exc:
@@ -367,15 +414,21 @@ async def run_call(
                     logger.exception("live call: LLM failed")
                     await ws.send_json({"type": "error",
                                         "text": f"LLM: {type(exc).__name__}: {exc}"})
+                    trace.error("llm", type(exc).__name__)
                     await ws.send_json({"type": "listening"})
                     continue
                 _llm_lat.append(time.perf_counter() - _t1)
+                trace.event("LLM", "", ms=round((time.perf_counter() - _t1) * 1000),
+                            len=len(reply or ""), end_call=bool(end_reason))
                 recorder.record.transcript.append({"role": "assistant", "text": reply})
                 recorder.record.turns += 1
                 history.append({"role": "user", "content": transcript})
                 history.append({"role": "assistant", "content": reply})
                 await ws.send_json({"type": "reply", "text": reply})
+                trace.tts_first_ms = None
                 await speak(reply)
+                if trace.tts_first_ms is not None:
+                    trace.response(trace.tts_first_ms - _t_speech_end)
                 if end_reason:
                     logger.info("live call: assistant ended the call (%s)", end_reason)
                     await ws.send_json({"type": "ended", "reason": end_reason})
@@ -401,3 +454,4 @@ async def run_call(
             pricing=pricing,
         )
         call_store.add(rec)
+        trace.call_end(duration_s=rec.duration_s, turns=rec.turns, end_reason=reason)

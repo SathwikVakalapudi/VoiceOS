@@ -26,3 +26,6 @@ results/
 
 # Captured utterances from voiceos_chat.py — voice recordings, keep local
 debug_audio/
+
+# Per-call JSONL frame traces (dashboard live-call debug)
+debug_traces/
